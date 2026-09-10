@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
+import { createClient } from "@supabase/supabase-js";
 
 const DEFAULT_CATEGORIES = [
   { id: "venue", name: "Venue & reception", budget: 0 },
@@ -33,11 +34,21 @@ const CATEGORY_FIELD_CONFIG = {
   misc: { quantityLabel: "Quantity", fromGuests: false, defaultQty: 1 },
 };
 const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", fromGuests: false, defaultQty: 1 };
-function fieldConfigFor(catId) {
-  return CATEGORY_FIELD_CONFIG[catId] || DEFAULT_FIELD_CONFIG;
+function categoryKeyFromName(name) {
+  return DEFAULT_CATEGORIES.find((c) => c.name === name)?.id || null;
 }
 
-const STORAGE_KEY = "wedding-budget-tracker-v2";
+function fieldConfigFor(catId, categories = DEFAULT_CATEGORIES) {
+  const category = categories.find((c) => c.id === catId);
+  const configKey = category?.configKey || categoryKeyFromName(category?.name) || catId;
+  return CATEGORY_FIELD_CONFIG[configKey] || DEFAULT_FIELD_CONFIG;
+}
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "https://voqakqzkupoxkkwviyxp.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const supabase = SUPABASE_PUBLISHABLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY)
+  : null;
 const CAD = (n) =>
   new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
     Number.isFinite(n) ? n : 0
@@ -57,8 +68,8 @@ const remainingColor = "#E4E2D6";
 const sans = "'Work Sans', sans-serif";
 const serif = "'Fraunces', serif";
 
-function emptyItemForm(catId) {
-  const cfg = fieldConfigFor(catId);
+function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
+  const cfg = fieldConfigFor(catId, categories);
   return {
     categoryId: catId,
     description: "",
@@ -86,10 +97,132 @@ function itemTotals(it) {
   return { total, paid, planned, depositCovered };
 }
 
+function dbCategoryToApp(row) {
+  return { id: row.id, name: row.name, budget: Number(row.budget) || 0 };
+}
+
+function dbItemToApp(row) {
+  return {
+    id: row.id,
+    categoryId: row.category_id,
+    description: row.description || "",
+    vendor: row.vendor || "",
+    quantity: Number(row.quantity) || 0,
+    unitCost: Number(row.unit_cost) || 0,
+    tax: Number(row.tax) || 0,
+    requiresDeposit: !!row.requires_deposit,
+    depositAmount: Number(row.deposit_amount) || 0,
+    depositDueDate: row.deposit_due_date || "",
+    amountPaid: Number(row.amount_paid) || 0,
+    balanceDueDate: row.balance_due_date || "",
+    date: row.item_date || "",
+    notes: row.notes || "",
+  };
+}
+
+function appItemToDb(item, weddingId) {
+  return {
+    wedding_id: weddingId,
+    category_id: item.categoryId,
+    description: item.description,
+    vendor: item.vendor || null,
+    quantity: Number(item.quantity) || 0,
+    unit_cost: Number(item.unitCost) || 0,
+    tax: Number(item.tax) || 0,
+    requires_deposit: !!item.requiresDeposit,
+    deposit_amount: Number(item.depositAmount) || 0,
+    deposit_due_date: item.depositDueDate || null,
+    amount_paid: Number(item.amountPaid) || 0,
+    balance_due_date: item.balanceDueDate || null,
+    item_date: item.date || null,
+    notes: item.notes || null,
+  };
+}
+
+function AuthScreen({ onSignedIn }) {
+  const [mode, setMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!supabase) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      if (mode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { emailRedirectTo: window.location.origin + import.meta.env.BASE_URL },
+        });
+        if (error) throw error;
+        if (data.session) onSignedIn?.(data.session);
+        else setMessage("Account created. Check your email to confirm your account, then sign in.");
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+        onSignedIn?.(data.session);
+      }
+    } catch (err) {
+      setMessage(err?.message || "Something went wrong. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!supabase) {
+    return (
+      <div style={{ fontFamily: sans, background: paper, color: ink, minHeight: "100vh" }}>
+        <GoogleFontImport />
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "90px 24px" }}>
+          <div style={{ fontFamily: serif, fontSize: 30, marginBottom: 10 }}>Connect Supabase</div>
+          <div style={{ fontSize: 13, color: "#6b6a63", lineHeight: 1.6 }}>
+            Add <strong>VITE_SUPABASE_PUBLISHABLE_KEY</strong> to your <code>.env.local</code> file, then restart Vite.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: sans, background: paper, color: ink, minHeight: "100vh" }}>
+      <GoogleFontImport />
+      <div style={{ maxWidth: 420, margin: "0 auto", padding: "80px 24px" }}>
+        <div style={{ fontFamily: serif, fontSize: 30, fontWeight: 500, marginBottom: 8 }}>Wedding budget</div>
+        <div style={{ fontSize: 13, color: "#6b6a63", marginBottom: 28 }}>
+          {mode === "signin" ? "Sign in to continue planning." : "Create an account to save your wedding budget securely."}
+        </div>
+        <form onSubmit={submit} style={{ display: "grid", gap: 14 }}>
+          <Field label="Email">
+            <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+          </Field>
+          <Field label="Password">
+            <input type="password" required minLength="6" autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+          </Field>
+          {message && <div style={{ fontSize: 12, color: message.startsWith("Account created") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
+          <button type="submit" disabled={busy} style={{ ...primaryBtnStyle, height: 42, opacity: busy ? 0.65 : 1 }}>
+            {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+          </button>
+        </form>
+        <button type="button" onClick={() => { setMode((m) => m === "signin" ? "signup" : "signin"); setMessage(""); }} style={{ ...iconTextBtnStyle, padding: "14px 0 0", fontSize: 12 }}>
+          {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function WeddingBudgetTracker() {
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [weddingId, setWeddingId] = useState(null);
   const [setupComplete, setSetupComplete] = useState(false);
   const [overallBudget, setOverallBudget] = useState(0);
   const [guestCount, setGuestCount] = useState("");
+  const [budgetLocked, setBudgetLocked] = useState(true);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [items, setItems] = useState([]);
   const [page, setPage] = useState("summary");
@@ -100,75 +233,131 @@ export default function WeddingBudgetTracker() {
   const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [setupError, setSetupError] = useState("");
-  const [budgetLocked, setBudgetLocked] = useState(true);
-  const [navCollapsed, setNavCollapsed] = useState(false);
   const [form, setForm] = useState(emptyItemForm(DEFAULT_CATEGORIES[0].id));
   const [editingId, setEditingId] = useState(null);
   const [itemError, setItemError] = useState("");
 
   useEffect(() => {
+    if (!supabase) {
+      setAuthChecked(true);
+      return;
+    }
+
+    let alive = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!alive) return;
+      setSession(data.session || null);
+      setAuthChecked(true);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthChecked(true);
+      if (!nextSession) {
+        setWeddingId(null);
+        setSetupComplete(false);
+        setOverallBudget(0);
+        setGuestCount("");
+        setCategories(DEFAULT_CATEGORIES);
+        setItems([]);
+        setLoaded(false);
+      }
+    });
+
+    return () => {
+      alive = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user?.id || !supabase) return;
     let cancelled = false;
 
     (async () => {
+      setLoaded(false);
+      setSaveState("idle");
       try {
-        let value = null;
+        const { data: wedding, error: weddingError } = await supabase
+          .from("weddings")
+          .select("id, overall_budget, guest_count, setup_complete")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
 
-        // Use the host app's storage API when available; otherwise fall back
-        // to localStorage so this component also works in a normal browser.
-        if (window.storage && typeof window.storage.get === "function") {
-          const res = await window.storage.get(STORAGE_KEY, false);
-          value = res?.value ?? null;
-        } else if (typeof window.localStorage !== "undefined") {
-          value = window.localStorage.getItem(STORAGE_KEY);
+        if (weddingError) throw weddingError;
+
+        if (!wedding) {
+          if (!cancelled) {
+            setWeddingId(null);
+            setSetupComplete(false);
+            setOverallBudget(0);
+            setGuestCount("");
+            setBudgetLocked(true);
+            setCategories(DEFAULT_CATEGORIES);
+            setItems([]);
+            setForm(emptyItemForm(DEFAULT_CATEGORIES[0].id));
+          }
+          return;
         }
 
-        if (!cancelled && value) {
-          const data = JSON.parse(value);
-          setSetupComplete(Boolean(data.setupComplete));
-          setOverallBudget(typeof data.overallBudget === "number" ? data.overallBudget : 0);
-          setGuestCount(data.guestCount == null ? "" : String(data.guestCount));
-          if (Array.isArray(data.categories) && data.categories.length) setCategories(data.categories);
-          if (Array.isArray(data.items)) setItems(data.items);
+        const [{ data: categoryRowsInitial, error: categoryError }, { data: itemRows, error: itemErrorResult }] = await Promise.all([
+          supabase.from("categories").select("id, name, budget").eq("wedding_id", wedding.id).order("created_at"),
+          supabase.from("items").select("*").eq("wedding_id", wedding.id).order("created_at"),
+        ]);
+
+        if (categoryError) throw categoryError;
+        if (itemErrorResult) throw itemErrorResult;
+
+        let categoryRows = categoryRowsInitial || [];
+        if (categoryRows.length === 0) {
+          const { data: seededCategories, error: seedError } = await supabase
+            .from("categories")
+            .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0 })))
+            .select("id, name, budget");
+          if (seedError) throw seedError;
+          categoryRows = seededCategories || [];
         }
-      } catch (e) {
-        // First run or unreadable saved data: start with a clean state.
+
+        if (!cancelled) {
+          const nextCategories = categoryRows.map(dbCategoryToApp);
+          setWeddingId(wedding.id);
+          setSetupComplete(!!wedding.setup_complete);
+          setOverallBudget(Number(wedding.overall_budget) || 0);
+          setGuestCount(wedding.guest_count == null ? "" : String(wedding.guest_count));
+          setBudgetLocked(true);
+          setCategories(nextCategories.length ? nextCategories : DEFAULT_CATEGORIES);
+          setItems((itemRows || []).map(dbItemToApp));
+          setForm(emptyItemForm(nextCategories[0]?.id || DEFAULT_CATEGORIES[0].id, nextCategories.length ? nextCategories : DEFAULT_CATEGORIES));
+          setSaveState("saved");
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setSaveState("error");
       } finally {
         if (!cancelled) setLoaded(true);
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    return () => { cancelled = true; };
+  }, [session?.user?.id]);
 
+  // Budget and guest-count changes are saved after a short pause.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !weddingId || !supabase || !setupComplete) return;
     setSaveState("saving");
-
-    const payload = JSON.stringify({
-      setupComplete,
-      overallBudget,
-      guestCount,
-      categories,
-      items,
-    });
-
     const t = setTimeout(async () => {
-      try {
-        if (window.storage && typeof window.storage.set === "function") {
-          await window.storage.set(STORAGE_KEY, payload, false);
-        } else if (typeof window.localStorage !== "undefined") {
-          window.localStorage.setItem(STORAGE_KEY, payload);
-        }
-        setSaveState("saved");
-      } catch (e) {
-        setSaveState("error");
-      }
-    }, 350);
-
+      const { error } = await supabase
+        .from("weddings")
+        .update({
+          overall_budget: Number(overallBudget) || 0,
+          guest_count: guestCount === "" ? null : Math.max(0, Number(guestCount) || 0),
+          setup_complete: true,
+        })
+        .eq("id", weddingId);
+      setSaveState(error ? "error" : "saved");
+    }, 500);
     return () => clearTimeout(t);
-  }, [setupComplete, overallBudget, guestCount, categories, items, loaded]);
+  }, [overallBudget, guestCount, weddingId, loaded, setupComplete]);
 
   const itemsByCat = useMemo(() => {
     const map = {};
@@ -204,38 +393,82 @@ export default function WeddingBudgetTracker() {
     { planned: 0, paid: 0 }
   );
 
-  function updateCategoryBudget(id, value) {
-    setCategories((cats) => cats.map((c) => (c.id === id ? { ...c, budget: value } : c)));
+  async function updateCategoryBudget(id, value) {
+    const next = Math.max(0, Number(value) || 0);
+    const previous = categories;
+    setCategories((cats) => cats.map((c) => (c.id === id ? { ...c, budget: next } : c)));
+    if (!supabase || !weddingId) return;
+    setSaveState("saving");
+    const { error } = await supabase.from("categories").update({ budget: next }).eq("id", id).eq("wedding_id", weddingId);
+    if (error) {
+      console.error(error);
+      setCategories(previous);
+      setSaveState("error");
+    } else {
+      setSaveState("saved");
+    }
   }
 
-  function splitRemainingEvenly() {
-    if (categories.length === 0) return;
+  async function splitRemainingEvenly() {
+    if (categories.length === 0 || !supabase || !weddingId) return;
     const share = Math.max(0, unassigned) / categories.length;
-    setCategories((cats) => cats.map((c) => ({ ...c, budget: (Number(c.budget) || 0) + share })));
+    const nextCategories = categories.map((c) => ({ ...c, budget: (Number(c.budget) || 0) + share }));
+    const previous = categories;
+    setCategories(nextCategories);
+    setSaveState("saving");
+    const results = await Promise.all(
+      nextCategories.map((c) => supabase.from("categories").update({ budget: c.budget }).eq("id", c.id).eq("wedding_id", weddingId))
+    );
+    if (results.some((r) => r.error)) {
+      setCategories(previous);
+      setSaveState("error");
+    } else {
+      setSaveState("saved");
+    }
   }
 
-  function addCategory() {
+  async function addCategory() {
     const name = newCatName.trim();
-    if (!name) return;
-    const id = uid();
-    setCategories((cats) => [...cats, { id, name, budget: 0 }]);
+    if (!name || !supabase || !weddingId) return;
+    setSaveState("saving");
+    const { data, error } = await supabase
+      .from("categories")
+      .insert({ wedding_id: weddingId, name, budget: 0 })
+      .select("id, name, budget")
+      .single();
+    if (error) {
+      console.error(error);
+      setSaveState("error");
+      return;
+    }
+    setCategories((cats) => [...cats, dbCategoryToApp(data)]);
     setNewCatName("");
     setShowAddCat(false);
     setManageCategoriesOpen(true);
     setPage("summary");
+    setSaveState("saved");
   }
 
-  function removeCategory(id) {
+  async function removeCategory(id) {
     if (items.some((it) => it.categoryId === id)) {
       if (!window.confirm("This category has items in it. Delete it and all its items?")) return;
+    }
+    if (!supabase || !weddingId) return;
+    setSaveState("saving");
+    const { error } = await supabase.from("categories").delete().eq("id", id).eq("wedding_id", weddingId);
+    if (error) {
+      console.error(error);
+      setSaveState("error");
+      return;
     }
     setCategories((cats) => cats.filter((c) => c.id !== id));
     setItems((its) => its.filter((it) => it.categoryId !== id));
     if (page === id) setPage("summary");
+    setSaveState("saved");
   }
 
   function openAddPanel(catId) {
-    setForm(emptyItemForm(catId || categories[0]?.id));
+    setForm(emptyItemForm(catId || categories[0]?.id, categories));
     setEditingId(null);
     setItemError("");
     setAddOpen(true);
@@ -263,7 +496,7 @@ export default function WeddingBudgetTracker() {
   }
 
   function onCategoryChangeInForm(catId) {
-    const cfg = fieldConfigFor(catId);
+    const cfg = fieldConfigFor(catId, categories);
     setForm((f) => ({
       ...f,
       categoryId: catId,
@@ -271,13 +504,18 @@ export default function WeddingBudgetTracker() {
     }));
   }
 
-  function saveItem(e) {
-    if (e && e.preventDefault) e.preventDefault();
+  async function saveItem(e) {
+    e.preventDefault();
     setItemError("");
     if (!form.description.trim() || !form.categoryId) {
       setItemError("Enter a description for this item.");
       return;
     }
+    if (!supabase || !weddingId) {
+      setItemError("Your wedding data is not loaded yet.");
+      return;
+    }
+
     const payload = {
       categoryId: form.categoryId,
       description: form.description.trim(),
@@ -293,38 +531,133 @@ export default function WeddingBudgetTracker() {
       date: form.date,
       notes: form.notes.trim(),
     };
+
+    setSaveState("saving");
     if (editingId) {
-      setItems((its) => its.map((it) => (it.id === editingId ? { ...it, ...payload } : it)));
+      const { data, error } = await supabase
+        .from("items")
+        .update(appItemToDb(payload, weddingId))
+        .eq("id", editingId)
+        .eq("wedding_id", weddingId)
+        .select("*")
+        .single();
+      if (error) {
+        console.error(error);
+        setItemError(error.message);
+        setSaveState("error");
+        return;
+      }
+      setItems((its) => its.map((it) => (it.id === editingId ? dbItemToApp(data) : it)));
     } else {
-      setItems((its) => [...its, { id: uid(), ...payload }]);
+      const { data, error } = await supabase
+        .from("items")
+        .insert(appItemToDb(payload, weddingId))
+        .select("*")
+        .single();
+      if (error) {
+        console.error(error);
+        setItemError(error.message);
+        setSaveState("error");
+        return;
+      }
+      setItems((its) => [...its, dbItemToApp(data)]);
     }
-    setForm(emptyItemForm(form.categoryId));
+
+    setForm(emptyItemForm(form.categoryId, categories));
     setEditingId(null);
     setItemError("");
     setAddOpen(false);
+    setSaveState("saved");
   }
 
-  function deleteItem(id) {
+  async function deleteItem(id) {
+    if (!supabase || !weddingId) return;
+    setSaveState("saving");
+    const { error } = await supabase.from("items").delete().eq("id", id).eq("wedding_id", weddingId);
+    if (error) {
+      console.error(error);
+      setSaveState("error");
+      return;
+    }
     setItems((its) => its.filter((it) => it.id !== id));
     if (editingId === id) {
       setEditingId(null);
       setAddOpen(false);
     }
+    setSaveState("saved");
   }
 
-  function finishSetup(e) {
-    if (e && e.preventDefault) e.preventDefault();
+  function updateOverallBudgetFromNav(value) {
+    const next = Math.max(0, Number(value) || 0);
+    setOverallBudget(next);
+  }
+
+  async function finishSetup(e) {
+    e.preventDefault();
 
     const budget = Number(overallBudget);
     if (!Number.isFinite(budget) || budget <= 0) {
       setSetupError("Enter your overall budget to continue.");
       return;
     }
+    if (!supabase || !session?.user?.id) {
+      setSetupError("You need to be signed in to continue.");
+      return;
+    }
 
     setSetupError("");
-    setAddOpen(false);
-    setPage("summary");
-    setSetupComplete(true);
+    setSaveState("saving");
+    try {
+      const { data: wedding, error: weddingError } = await supabase
+        .from("weddings")
+        .insert({
+          user_id: session.user.id,
+          overall_budget: budget,
+          guest_count: guestCount === "" ? null : Math.max(0, Number(guestCount) || 0),
+          setup_complete: false,
+        })
+        .select("id")
+        .single();
+      if (weddingError) throw weddingError;
+
+      const { data: categoryRows, error: categoryError } = await supabase
+        .from("categories")
+        .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0 })))
+        .select("id, name, budget");
+      if (categoryError) throw categoryError;
+
+      const { error: activateError } = await supabase
+        .from("weddings")
+        .update({ setup_complete: true })
+        .eq("id", wedding.id);
+      if (activateError) throw activateError;
+
+      const nextCategories = (categoryRows || []).map(dbCategoryToApp);
+      setWeddingId(wedding.id);
+      setCategories(nextCategories);
+      setForm(emptyItemForm(nextCategories[0]?.id, nextCategories));
+      setAddOpen(false);
+      setPage("summary");
+      setSetupComplete(true);
+      setBudgetLocked(true);
+      setSaveState("saved");
+    } catch (err) {
+      console.error(err);
+      setSetupError(err?.message || "Couldn't create your wedding budget.");
+      setSaveState("error");
+    }
+  }
+
+  if (!authChecked) {
+    return (
+      <div style={{ fontFamily: sans, padding: 40, textAlign: "center", color: ink }}>
+        Loading…
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen onSignedIn={setSession} />;
   }
 
   if (!loaded) {
@@ -346,7 +679,7 @@ export default function WeddingBudgetTracker() {
           <div style={{ fontSize: 13, color: "#6b6a63", marginBottom: 28 }}>
             Two numbers to start — you can add items one by one from here on out.
           </div>
-          <div style={{ display: "grid", gap: 16 }} onKeyDown={(e) => { if (e.key === "Enter") finishSetup(e); }}>
+          <form onSubmit={finishSetup} style={{ display: "grid", gap: 16 }}>
             <Field label="Overall wedding budget">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontFamily: serif, fontSize: 18, color: forest }}>$</span>
@@ -369,10 +702,10 @@ export default function WeddingBudgetTracker() {
                 style={{ ...inputStyle, height: 42, fontSize: 16 }}
               />
             </Field>
-            <button type="button" onClick={finishSetup} style={{ ...primaryBtnStyle, height: 42, marginTop: 8 }}>
+            <button type="submit" style={{ ...primaryBtnStyle, height: 42, marginTop: 8 }}>
               Start planning
             </button>
-          </div>
+          </form>
         </div>
       </div>
     );
@@ -384,95 +717,77 @@ export default function WeddingBudgetTracker() {
     <div style={{ fontFamily: sans, background: paper, color: ink, minHeight: "100%", display: "flex" }}>
       <GoogleFontImport />
 
-      <nav style={{
-        width: navCollapsed ? 56 : 210, flexShrink: 0, borderRight: `1px solid ${line}`,
-        padding: navCollapsed ? "24px 8px" : "24px 14px", background: "#FCFBF7",
-        transition: "width 150ms ease, padding 150ms ease",
-      }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: navCollapsed ? "center" : "space-between", padding: "0 8px", marginBottom: 4 }}>
-          {!navCollapsed && <div style={{ fontFamily: serif, fontSize: 19, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Wedding budget</div>}
-          <button
-            onClick={() => setNavCollapsed((c) => !c)}
-            title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            style={collapseBtnStyle}
-          >
-            {navCollapsed ? "»" : "«"}
-          </button>
-        </div>
-
-        {!navCollapsed && (
-          <div style={{ padding: "14px 8px", margin: "14px 0", borderTop: `1px solid ${line}`, borderBottom: `1px solid ${line}` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <span style={{ fontSize: 11, color: "#8a8a80" }}>Overall budget</span>
-              <button
-                onClick={() => setBudgetLocked((l) => !l)}
-                title={budgetLocked ? "Edit budget" : "Done editing"}
-                style={lockBtnStyle}
-              >
-                {budgetLocked ? "✏️" : "✓"}
-              </button>
-            </div>
-            {budgetLocked ? (
-              <div style={{ fontFamily: serif, fontSize: 17, fontWeight: 500 }}>{CAD(overallBudget)}</div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ fontFamily: serif, fontSize: 15, color: forest }}>$</span>
+      <nav style={{ width: 210, flexShrink: 0, borderRight: `1px solid ${line}`, padding: "24px 14px", background: "#FCFBF7" }}>
+        <div style={{ padding: "0 8px", marginBottom: 18 }}>
+          <div style={{ fontFamily: serif, fontSize: 19, fontWeight: 500 }}>Wedding budget</div>
+          <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+            <div>
+              <div style={{ fontSize: 10, color: "#8a8a80", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 }}>Overall budget</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: serif, fontSize: 16, color: forest }}>$</span>
                 <input
-                  type="number" min="0" autoFocus
+                  type="number" min="0" step="100"
                   value={overallBudget === 0 ? "" : overallBudget}
-                  onChange={(e) => setOverallBudget(Math.max(0, Number(e.target.value) || 0))}
-                  style={{ ...inputStyle, height: 30, fontSize: 13 }}
+                  disabled={budgetLocked}
+                  onChange={(e) => updateOverallBudgetFromNav(e.target.value)}
+                  style={{ ...inputStyle, height: 34, fontSize: 13, background: budgetLocked ? "#F1F0EA" : "#fff", cursor: budgetLocked ? "not-allowed" : "text", color: ink }}
                 />
               </div>
-            )}
+              <button
+                type="button"
+                onClick={() => setBudgetLocked((v) => !v)}
+                style={{ ...iconTextBtnStyle, padding: "5px 0 0", fontSize: 11 }}
+              >
+                {budgetLocked ? "Unlock to edit" : "Lock budget"}
+              </button>
+            </div>
 
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 11, color: "#8a8a80", marginBottom: 6 }}>Estimated guests</div>
+            <div>
+              <div style={{ fontSize: 10, color: "#8a8a80", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 }}>Estimated guests</div>
               <input
-                type="number" min="0"
+                type="number" min="0" step="1"
                 value={guestCount}
                 onChange={(e) => setGuestCount(e.target.value)}
-                placeholder="e.g. 120"
-                style={{ ...inputStyle, height: 30, fontSize: 13 }}
+                placeholder="120"
+                style={{ ...inputStyle, height: 34, fontSize: 13 }}
               />
             </div>
           </div>
-        )}
+        </div>
+        <div style={{ fontSize: 11, color: "#8a8a80", padding: "0 8px", margin: "0 0 6px" }}>
+          {saveState === "saving" ? "Saving…" : saveState === "error" ? "Couldn't save" : "Saved"}
+        </div>
 
-        {!navCollapsed && (
-          <div style={{ fontSize: 11, color: "#8a8a80", padding: "0 8px", margin: "0 0 6px" }}>
-            {saveState === "saving" ? "Saving…" : saveState === "error" ? "Couldn't save" : "Saved"}
+        <NavItem active={page === "summary"} onClick={() => setPage("summary")} label="Summary" />
+
+        <div style={{ marginTop: 22, padding: "0 8px" }}>
+          <button onClick={() => openAddPanel(activeCategory ? activeCategory.id : categories[0]?.id)} style={{ ...primaryBtnStyle, width: "100%" }}>
+            + Add item
+          </button>
+        </div>
+
+        <div style={{ marginTop: 26, padding: "14px 8px 0", borderTop: `1px solid ${line}` }}>
+          <div style={{ fontSize: 10, color: "#8a8a80", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 6 }}>
+            {session.user.email}
           </div>
-        )}
-
-        <NavItem active={page === "summary"} onClick={() => setPage("summary")} label="Summary" collapsed={navCollapsed} glyph="S" />
-
-
-        <div style={{ marginTop: 22, padding: navCollapsed ? 0 : "0 8px" }}>
-          <button
-            onClick={() => openAddPanel(activeCategory ? activeCategory.id : categories[0]?.id)}
-            title="Add item"
-            style={navCollapsed ? { ...primaryBtnStyle, width: "100%", padding: "9px 0" } : { ...primaryBtnStyle, width: "100%" }}
-          >
-            {navCollapsed ? "+" : "+ Add item"}
+          <button type="button" onClick={() => supabase.auth.signOut()} style={{ ...iconTextBtnStyle, padding: 0, fontSize: 11 }}>
+            Sign out
           </button>
         </div>
       </nav>
 
       <main style={{ flex: 1, minWidth: 0, padding: "36px 32px 60px", overflowX: "hidden" }}>
         {addOpen && (
-          <Modal onClose={() => { setAddOpen(false); setEditingId(null); setItemError(""); }}>
-            <AddItemPanel
-              form={form}
-              setForm={setForm}
-              categories={categories}
-              editingId={editingId}
-              onCategoryChange={onCategoryChangeInForm}
-              onSubmit={saveItem}
-              itemError={itemError}
-              onCancel={() => { setAddOpen(false); setEditingId(null); setItemError(""); }}
-            />
-          </Modal>
+          <AddItemPanel
+            form={form}
+            setForm={setForm}
+            categories={categories}
+            editingId={editingId}
+            onCategoryChange={onCategoryChangeInForm}
+            onSubmit={saveItem}
+            itemError={itemError}
+            onCancel={() => { setAddOpen(false); setEditingId(null); setItemError(""); }}
+          />
         )}
 
         {page === "summary" ? (
@@ -502,11 +817,9 @@ export default function WeddingBudgetTracker() {
             items={itemsByCat[activeCategory.id] || []}
             totals={categoryTotals(activeCategory.id)}
             updateCategoryBudget={updateCategoryBudget}
-            onAddItem={openAddPanel}
             onEditItem={openEditItem}
             onDeleteItem={deleteItem}
             onRemoveCategory={removeCategory}
-            onGoToSummary={() => setPage("summary")}
           />
         ) : null}
       </main>
@@ -525,45 +838,20 @@ function GoogleFontImport() {
   );
 }
 
-function Modal({ children, onClose }) {
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, background: "rgba(35, 38, 31, 0.45)",
-        display: "flex", alignItems: "flex-start", justifyContent: "center",
-        padding: "48px 20px", overflowY: "auto", zIndex: 50,
-      }}
-    >
-      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 640 }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function NavItem({ active, onClick, label, dotColor, collapsed, glyph }) {
+function NavItem({ active, onClick, label, dotColor }) {
   return (
     <button
       onClick={onClick}
-      title={collapsed ? label : undefined}
       style={{
-        display: "flex", alignItems: "center", gap: 8, width: "100%",
-        textAlign: collapsed ? "center" : "left", justifyContent: collapsed ? "center" : "flex-start",
+        display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
         background: active ? "#fff" : "transparent",
         border: active ? `1px solid ${line}` : "1px solid transparent",
         borderRadius: 7, padding: "8px 8px", fontSize: 13, fontWeight: active ? 600 : 400,
         color: ink, marginBottom: 2,
       }}
     >
-      {collapsed ? (
-        <span style={{ fontSize: 12, fontWeight: 600 }}>{glyph || label.charAt(0).toUpperCase()}</span>
-      ) : (
-        <>
-          {dotColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />}
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-        </>
-      )}
+      {dotColor && <span style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />}
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
     </button>
   );
 }
@@ -713,23 +1001,14 @@ function SummaryPage({
   );
 }
 
-function CategoryPage({ category, items, totals, updateCategoryBudget, onAddItem, onEditItem, onDeleteItem, onRemoveCategory, onGoToSummary }) {
+function CategoryPage({ category, items, totals, updateCategoryBudget, onEditItem, onDeleteItem, onRemoveCategory }) {
   const budget = Number(category.budget) || 0;
   const remaining = budget - totals.paid;
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#8a8a80", marginBottom: 14 }}>
-        <button onClick={onGoToSummary} style={breadcrumbBtnStyle}>Summary</button>
-        <span>/</span>
-        <span style={{ color: ink, fontWeight: 500 }}>{category.name}</span>
-      </div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, gap: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, gap: 12 }}>
         <div style={{ fontFamily: serif, fontSize: 28, fontWeight: 500 }}>{category.name}</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => onAddItem(category.id)} style={primaryBtnStyle}>+ Add item for {category.name}</button>
-          <button onClick={() => onRemoveCategory(category.id)} style={ghostBtnStyle}>Delete category</button>
-        </div>
+        <button onClick={() => onRemoveCategory(category.id)} style={ghostBtnStyle}>Delete category</button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 30 }}>
@@ -753,10 +1032,7 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onAddItem
 
       {items.length === 0 ? (
         <div style={{ fontSize: 13, color: "#8a8a80", border: `1px solid ${line}`, borderRadius: 12, padding: "24px", background: "#fff" }}>
-          No items logged in this category yet.{" "}
-          <button onClick={() => onAddItem(category.id)} style={{ ...iconTextBtnStyle, padding: 0, fontSize: 13 }}>
-            Add your first item
-          </button>
+          No items logged in this category yet. Use "+ Add item" in the sidebar to log your first one.
         </div>
       ) : (
         <div style={{ border: `1px solid ${line}`, borderRadius: 12, background: "#fff", overflow: "hidden", overflowX: "auto" }}>
@@ -807,13 +1083,13 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onAddItem
 }
 
 function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel }) {
-  const cfg = fieldConfigFor(form.categoryId);
+  const cfg = fieldConfigFor(form.categoryId, categories);
   return (
     <div style={{ border: `1.5px solid ${forest}`, borderRadius: 12, background: "#fff", padding: 22, marginBottom: 28 }}>
       <div style={{ fontFamily: serif, fontSize: 18, fontWeight: 500, marginBottom: 16 }}>
         {editingId ? "Edit item" : "Add an item"}
       </div>
-      <div onKeyDown={(e) => { if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") onSubmit(e); }}>
+      <form onSubmit={onSubmit}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10, marginBottom: 10 }}>
           <Field label="Category">
             <select
@@ -892,10 +1168,10 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={onSubmit} style={primaryBtnStyle}>{editingId ? "Save changes" : "Add item"}</button>
+          <button type="submit" style={primaryBtnStyle}>{editingId ? "Save changes" : "Add item"}</button>
           <button type="button" onClick={onCancel} style={ghostBtnStyle}>Cancel</button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }
@@ -975,36 +1251,6 @@ const navAddBtnStyle = {
   width: "100%",
 };
 
-const lockBtnStyle = {
-  background: "transparent",
-  border: "none",
-  fontSize: 13,
-  lineHeight: 1,
-  padding: 2,
-};
-
-const collapseBtnStyle = {
-  background: "transparent",
-  border: `1px solid ${line}`,
-  borderRadius: 6,
-  color: forest,
-  fontSize: 12,
-  lineHeight: 1,
-  width: 22,
-  height: 22,
-  flexShrink: 0,
-  padding: 0,
-};
-
-const breadcrumbBtnStyle = {
-  background: "transparent",
-  border: "none",
-  color: forest,
-  fontSize: 12,
-  fontWeight: 500,
-  padding: 0,
-};
-
 const iconTextBtnStyle = {
   background: "transparent",
   border: "none",
@@ -1016,5 +1262,3 @@ const iconTextBtnStyle = {
 
 const thStyle = { padding: "10px 12px", fontWeight: 500, fontSize: 11 };
 const tdStyle = { padding: "12px", verticalAlign: "top" };
-
-
