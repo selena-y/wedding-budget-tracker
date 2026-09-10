@@ -143,8 +143,56 @@ function AuthScreen({ onSignedIn }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+
+  async function sendPasswordReset() {
+    if (!supabase || !email.trim()) {
+      setMessage("Enter your email address first.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: window.location.origin + import.meta.env.BASE_URL,
+      });
+      if (error) throw error;
+      setMessage("Password reset email sent. Check your inbox.");
+    } catch (err) {
+      setMessage(err?.message || "Couldn't send the reset email.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateRecoveredPassword(e) {
+    e.preventDefault();
+    if (password.length < 6) {
+      setMessage("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setMessage("Passwords don't match.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      setMessage("Password updated. You can continue to your budget.");
+      window.history.replaceState({}, document.title, window.location.pathname);
+      setMode("signin");
+      setPassword("");
+      setConfirmPassword("");
+    } catch (err) {
+      setMessage(err?.message || "Couldn't update your password.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -173,6 +221,17 @@ function AuthScreen({ onSignedIn }) {
     }
   }
 
+  useEffect(() => {
+    if (!supabase) return;
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setMode("recovery");
+        setMessage("Choose a new password for your account.");
+      }
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
   if (!supabase) {
     return (
       <div style={{ fontFamily: sans, background: paper, color: ink, minHeight: "100vh" }}>
@@ -195,21 +254,43 @@ function AuthScreen({ onSignedIn }) {
         <div style={{ fontSize: 13, color: "#6b6a63", marginBottom: 28 }}>
           {mode === "signin" ? "Sign in to continue planning." : "Create an account to save your wedding budget securely."}
         </div>
-        <form onSubmit={submit} style={{ display: "grid", gap: 14 }}>
-          <Field label="Email">
-            <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, height: 42 }} />
-          </Field>
-          <Field label="Password">
-            <input type="password" required minLength="6" autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
-          </Field>
-          {message && <div style={{ fontSize: 12, color: message.startsWith("Account created") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
-          <button type="submit" disabled={busy} style={{ ...primaryBtnStyle, height: 42, opacity: busy ? 0.65 : 1 }}>
-            {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
-          </button>
-        </form>
-        <button type="button" onClick={() => { setMode((m) => m === "signin" ? "signup" : "signin"); setMessage(""); }} style={{ ...iconTextBtnStyle, padding: "14px 0 0", fontSize: 12 }}>
-          {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
-        </button>
+        {mode === "recovery" ? (
+          <form onSubmit={updateRecoveredPassword} style={{ display: "grid", gap: 14 }}>
+            <Field label="New password">
+              <input type="password" required minLength="6" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+            </Field>
+            <Field label="Confirm new password">
+              <input type="password" required minLength="6" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+            </Field>
+            {message && <div style={{ fontSize: 12, color: message.startsWith("Password updated") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
+            <button type="submit" disabled={busy} style={{ ...primaryBtnStyle, height: 42, opacity: busy ? 0.65 : 1 }}>
+              {busy ? "Updating…" : "Update password"}
+            </button>
+          </form>
+        ) : (
+          <>
+            <form onSubmit={submit} style={{ display: "grid", gap: 14 }}>
+              <Field label="Email">
+                <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+              </Field>
+              <Field label="Password">
+                <input type="password" required minLength="6" autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
+              </Field>
+              {message && <div style={{ fontSize: 12, color: message.startsWith("Account created") || message.startsWith("Password reset email sent") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
+              <button type="submit" disabled={busy} style={{ ...primaryBtnStyle, height: 42, opacity: busy ? 0.65 : 1 }}>
+                {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+              </button>
+            </form>
+            {mode === "signin" && (
+              <button type="button" disabled={busy} onClick={sendPasswordReset} style={{ ...iconTextBtnStyle, padding: "12px 0 0", fontSize: 12 }}>
+                Forgot password?
+              </button>
+            )}
+            <button type="button" onClick={() => { setMode((m) => m === "signin" ? "signup" : "signin"); setMessage(""); }} style={{ ...iconTextBtnStyle, padding: "10px 0 0", fontSize: 12 }}>
+              {mode === "signin" ? "New here? Create an account" : "Already have an account? Sign in"}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
