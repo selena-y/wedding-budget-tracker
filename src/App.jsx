@@ -22,20 +22,20 @@ const isDefaultCategory = (category) =>
   category?.categoryType === "default" || DEFAULT_CATEGORY_NAMES.has(category?.name);
 
 const CATEGORY_FIELD_CONFIG = {
-  venue: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, itemized: true, fromGuests: false, defaultQty: 1 },
-  photo: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
-  attire: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
-  beauty: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, itemized: true, fromGuests: false, defaultQty: 1 },
-  decor: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
-  flowers: { quantityLabel: "Arrangements", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
-  music: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  venue: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  photo: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  attire: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  beauty: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  decor: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  flowers: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  music: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   stationery: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
-  transport: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
-  officiant: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  transport: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  officiant: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   favors: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   misc: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
 };
-const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, itemized: false, fromGuests: false, defaultQty: 1 };
+const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 };
 function categoryKeyFromName(name) {
   return DEFAULT_CATEGORIES.find((c) => c.name === name)?.id || null;
 }
@@ -100,6 +100,29 @@ function lineItemTotals(lineItems = []) {
   }, { subtotal: 0, taxAmount: 0, serviceFeeAmount: 0, total: 0 });
 }
 
+function createPaymentEntry(overrides = {}) {
+  return {
+    id: `payment-${Math.random().toString(36).slice(2, 9)}`,
+    kind: "installment",
+    title: "",
+    amount: "",
+    dueDate: "",
+    paid: false,
+    whoPaid: "",
+    paymentMethod: "",
+    ...overrides,
+  };
+}
+
+function paymentScheduleTotals(paymentSchedule = []) {
+  return paymentSchedule.reduce((totals, payment) => {
+    const amount = Math.max(0, Number(payment.amount) || 0);
+    totals.scheduled += amount;
+    if (payment.paid) totals.paid += amount;
+    return totals;
+  }, { scheduled: 0, paid: 0 });
+}
+
 function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
   const cfg = fieldConfigFor(catId, categories);
   return {
@@ -109,29 +132,28 @@ function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
     quantity: String(cfg.defaultQty),
     unitCost: "",
     taxRate: "0",
-    requiresDeposit: false,
-    depositAmount: "",
-    depositDueDate: "",
-    depositPaid: false,
-    amountPaid: "",
-    whoPaid: "",
-    paymentMethod: "",
-    balanceDueDate: "",
-    lineItems: cfg.itemized ? [createLineItem()] : [],
+    serviceFeeRate: "0",
+    costMode: "simple",
+    paymentStructure: "",
+    paymentSchedule: [],
+    lineItems: [],
     notes: "",
   };
 }
 
 function itemTotals(it) {
-  const itemizedTotals = it.lineItems?.length ? lineItemTotals(it.lineItems) : null;
+  const isItemized = it.costMode === "itemized" || (!it.costMode && it.lineItems?.length > 0);
+  const itemizedTotals = isItemized ? lineItemTotals(it.lineItems) : null;
   const subtotal = itemizedTotals?.subtotal ?? ((Number(it.quantity) || 0) * (Number(it.unitCost) || 0));
   const taxAmount = itemizedTotals?.taxAmount ?? (subtotal * (Math.max(0, Number(it.taxRate) || 0) / 100));
-  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? 0;
-  const total = itemizedTotals?.total ?? (subtotal + taxAmount);
-  const paid = Number(it.amountPaid) || 0;
+  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? (subtotal * (Math.max(0, Number(it.serviceFeeRate) || 0) / 100));
+  const total = itemizedTotals?.total ?? (subtotal + taxAmount + serviceFeeAmount);
+  const scheduleTotals = it.paymentSchedule?.length ? paymentScheduleTotals(it.paymentSchedule) : null;
+  const paid = scheduleTotals?.paid ?? (Number(it.amountPaid) || 0);
   const planned = Math.max(0, total - paid);
-  const depositCovered = it.requiresDeposit
-    ? !!it.depositPaid || (paid >= (Number(it.depositAmount) || 0) && (Number(it.depositAmount) || 0) > 0)
+  const depositPayment = it.paymentSchedule?.find((payment) => payment.kind === "deposit");
+  const depositCovered = it.paymentStructure === "deposit_final" || it.requiresDeposit
+    ? depositPayment ? !!depositPayment.paid : !!it.depositPaid || (paid >= (Number(it.depositAmount) || 0) && (Number(it.depositAmount) || 0) > 0)
     : null;
   return { subtotal, taxAmount, serviceFeeAmount, total, paid, planned, depositCovered };
 }
@@ -148,6 +170,24 @@ function dbCategoryToApp(row) {
 }
 
 function dbItemToApp(row) {
+  const legacySubtotal = (Number(row.quantity) || 0) * (Number(row.unit_cost) || 0);
+  const legacyTotal = legacySubtotal + (Number(row.tax) || 0);
+  let paymentSchedule = Array.isArray(row.payment_schedule)
+    ? row.payment_schedule.map((payment) => createPaymentEntry({
+      ...payment,
+      amount: String(payment.amount ?? ""),
+    }))
+    : [];
+  const paymentStructure = row.payment_structure || (row.requires_deposit ? "deposit_final" : "itemized");
+  if (paymentSchedule.length === 0 && row.requires_deposit) {
+    const depositAmount = Number(row.deposit_amount) || 0;
+    paymentSchedule = [
+      createPaymentEntry({ kind: "deposit", title: "Deposit", amount: String(depositAmount || ""), dueDate: row.deposit_due_date || "", paid: !!row.deposit_paid, whoPaid: row.who_paid || "", paymentMethod: row.payment_method || "" }),
+      createPaymentEntry({ kind: "final", title: "Final payment", amount: String(Math.max(0, legacyTotal - depositAmount) || ""), dueDate: row.balance_due_date || "", paid: legacyTotal > 0 && Number(row.amount_paid) >= legacyTotal }),
+    ];
+  } else if (paymentSchedule.length === 0 && Number(row.amount_paid) > 0) {
+    paymentSchedule = [createPaymentEntry({ title: "Payment", amount: String(row.amount_paid), paid: true, whoPaid: row.who_paid || "", paymentMethod: row.payment_method || "" })];
+  }
   return {
     id: row.id,
     categoryId: row.category_id,
@@ -156,6 +196,8 @@ function dbItemToApp(row) {
     quantity: Number(row.quantity) || 0,
     unitCost: Number(row.unit_cost) || 0,
     taxRate: Number(row.tax_rate) || 0,
+    serviceFeeRate: Number(row.service_fee_rate) || 0,
+    costMode: row.cost_mode || (Array.isArray(row.line_items) && row.line_items.length > 0 ? "itemized" : "simple"),
     requiresDeposit: !!row.requires_deposit,
     depositAmount: Number(row.deposit_amount) || 0,
     depositDueDate: row.deposit_due_date || "",
@@ -164,6 +206,8 @@ function dbItemToApp(row) {
     whoPaid: row.who_paid || "",
     paymentMethod: row.payment_method || "",
     balanceDueDate: row.balance_due_date || "",
+    paymentStructure,
+    paymentSchedule,
     lineItems: Array.isArray(row.line_items) ? row.line_items.map((lineItem) => createLineItem({
       ...lineItem,
       quantity: String(lineItem.quantity ?? 1),
@@ -184,9 +228,25 @@ function appItemToDb(item, weddingId) {
     taxRate: Math.max(0, Number(lineItem.taxRate) || 0),
     serviceFeeRate: Math.max(0, Number(lineItem.serviceFeeRate) || 0),
   }));
-  const itemizedTotals = normalizedLineItems.length ? lineItemTotals(normalizedLineItems) : null;
+  const isItemized = item.costMode === "itemized" && normalizedLineItems.length > 0;
+  const itemizedTotals = isItemized ? lineItemTotals(normalizedLineItems) : null;
   const subtotal = itemizedTotals?.subtotal ?? ((Number(item.quantity) || 0) * (Number(item.unitCost) || 0));
   const taxRate = Math.max(0, Number(item.taxRate) || 0);
+  const serviceFeeRate = Math.max(0, Number(item.serviceFeeRate) || 0);
+  const normalizedPaymentSchedule = (item.paymentSchedule || []).map((payment) => ({
+    id: payment.id,
+    kind: payment.kind || "installment",
+    title: payment.title,
+    amount: Math.max(0, Number(payment.amount) || 0),
+    dueDate: payment.dueDate || "",
+    paid: !!payment.paid,
+    whoPaid: payment.whoPaid || "",
+    paymentMethod: payment.paymentMethod || "",
+  }));
+  const scheduleTotals = paymentScheduleTotals(normalizedPaymentSchedule);
+  const depositPayment = normalizedPaymentSchedule.find((payment) => payment.kind === "deposit");
+  const finalPayment = normalizedPaymentSchedule.find((payment) => payment.kind === "final");
+  const firstPaidPayment = normalizedPaymentSchedule.find((payment) => payment.paid);
   return {
     wedding_id: weddingId,
     category_id: item.categoryId,
@@ -196,14 +256,18 @@ function appItemToDb(item, weddingId) {
     unit_cost: itemizedTotals ? itemizedTotals.subtotal + itemizedTotals.serviceFeeAmount : (Number(item.unitCost) || 0),
     tax: itemizedTotals ? itemizedTotals.taxAmount : subtotal * (taxRate / 100),
     tax_rate: itemizedTotals ? 0 : taxRate,
-    requires_deposit: !!item.requiresDeposit,
-    deposit_amount: Number(item.depositAmount) || 0,
-    deposit_due_date: item.depositDueDate || null,
-    deposit_paid: !!item.depositPaid,
-    amount_paid: Number(item.amountPaid) || 0,
-    who_paid: item.whoPaid || null,
-    payment_method: item.paymentMethod || null,
-    balance_due_date: item.balanceDueDate || null,
+    service_fee_rate: itemizedTotals ? 0 : serviceFeeRate,
+    cost_mode: isItemized ? "itemized" : "simple",
+    requires_deposit: item.paymentStructure === "deposit_final",
+    deposit_amount: Number(depositPayment?.amount) || 0,
+    deposit_due_date: depositPayment?.dueDate || null,
+    deposit_paid: !!depositPayment?.paid,
+    amount_paid: scheduleTotals.paid,
+    who_paid: firstPaidPayment?.whoPaid || null,
+    payment_method: firstPaidPayment?.paymentMethod || null,
+    balance_due_date: finalPayment?.dueDate || normalizedPaymentSchedule.at(-1)?.dueDate || null,
+    payment_structure: item.paymentStructure || null,
+    payment_schedule: normalizedPaymentSchedule,
     line_items: normalizedLineItems,
     notes: item.notes || null,
   };
@@ -728,12 +792,20 @@ export default function WeddingBudgetTracker() {
   }
 
   function openEditItem(it) {
-    const cfg = fieldConfigFor(it.categoryId, categories);
+    const costMode = it.costMode || (it.lineItems?.length ? "itemized" : "simple");
     const lineItems = it.lineItems?.length
       ? it.lineItems.map((lineItem) => createLineItem(lineItem))
-      : cfg.itemized
+      : costMode === "itemized"
         ? [createLineItem({ title: it.description, quantity: String(it.quantity || 1), unitCost: String(it.unitCost || ""), taxRate: String(it.taxRate || 0) })]
         : [];
+    let paymentSchedule = it.paymentSchedule?.map((payment) => createPaymentEntry(payment)) || [];
+    if (it.paymentStructure === "deposit_final") {
+      const deposit = paymentSchedule.find((payment) => payment.kind === "deposit") || createPaymentEntry({ kind: "deposit", title: "Deposit" });
+      const finalPayment = paymentSchedule.find((payment) => payment.kind === "final") || createPaymentEntry({ kind: "final", title: "Final payment" });
+      paymentSchedule = [deposit, finalPayment];
+    } else if (paymentSchedule.length === 0) {
+      paymentSchedule = [createPaymentEntry({ title: "Payment 1" })];
+    }
     setForm({
       categoryId: it.categoryId,
       description: it.description,
@@ -741,14 +813,10 @@ export default function WeddingBudgetTracker() {
       quantity: String(it.quantity),
       unitCost: String(it.unitCost),
       taxRate: String(it.taxRate || 0),
-      requiresDeposit: !!it.requiresDeposit,
-      depositAmount: it.depositAmount ? String(it.depositAmount) : "",
-      depositDueDate: it.depositDueDate || "",
-      depositPaid: !!it.depositPaid,
-      amountPaid: String(it.amountPaid),
-      whoPaid: it.whoPaid || "",
-      paymentMethod: it.paymentMethod || "",
-      balanceDueDate: it.balanceDueDate || "",
+      serviceFeeRate: String(it.serviceFeeRate || 0),
+      costMode,
+      paymentStructure: it.paymentStructure || "itemized",
+      paymentSchedule,
       lineItems,
       notes: it.notes || "",
     });
@@ -763,7 +831,6 @@ export default function WeddingBudgetTracker() {
       ...f,
       categoryId: catId,
       quantity: cfg.fromGuests && Number(guestCount) > 0 ? String(guestCount) : String(cfg.defaultQty),
-      lineItems: cfg.itemized && !f.lineItems?.length ? [createLineItem()] : f.lineItems,
     }));
   }
 
@@ -779,33 +846,45 @@ export default function WeddingBudgetTracker() {
       return;
     }
 
-    const cfg = fieldConfigFor(form.categoryId, categories);
-    const activeLineItems = cfg.itemized
-      ? (form.lineItems || []).filter((lineItem) => lineItem.title.trim() || Number(lineItem.unitCost) > 0)
-      : [];
-    if (cfg.itemized && (activeLineItems.length === 0 || activeLineItems.some((lineItem) => !lineItem.title.trim()))) {
+    const isItemized = form.costMode === "itemized";
+    const activeLineItems = isItemized
+      ? (form.lineItems || []).filter((lineItem) => (lineItem.title || "").trim() || Number(lineItem.unitCost) > 0)
+      : (form.lineItems || []);
+    if (isItemized && (activeLineItems.length === 0 || activeLineItems.some((lineItem) => !(lineItem.title || "").trim()))) {
       setItemError("Add a title for each itemized cost.");
       return;
     }
+    if (!form.paymentStructure) {
+      setItemError("Choose a payment structure.");
+      return;
+    }
 
-    const payload = {
+    const costPayload = {
       categoryId: form.categoryId,
       description: form.description.trim(),
       vendor: form.vendor.trim(),
-      quantity: cfg.itemized ? 1 : cfg.showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1,
+      quantity: isItemized ? 1 : Math.max(0, Number(form.quantity) || 0),
       unitCost: Math.max(0, Number(form.unitCost) || 0),
       taxRate: Math.max(0, Number(form.taxRate) || 0),
-      requiresDeposit: form.requiresDeposit,
-      depositAmount: form.requiresDeposit ? Math.max(0, Number(form.depositAmount) || 0) : 0,
-      depositDueDate: form.requiresDeposit ? form.depositDueDate : "",
-      depositPaid: form.requiresDeposit && !!form.depositPaid,
-      amountPaid: Math.max(0, Number(form.amountPaid) || 0),
-      whoPaid: form.whoPaid.trim(),
-      paymentMethod: form.paymentMethod,
-      balanceDueDate: form.balanceDueDate,
+      serviceFeeRate: Math.max(0, Number(form.serviceFeeRate) || 0),
+      costMode: isItemized ? "itemized" : "simple",
       lineItems: activeLineItems,
       notes: form.notes.trim(),
     };
+    const expenseTotal = itemTotals({ ...costPayload, paymentSchedule: [] }).total;
+    let paymentSchedule = (form.paymentSchedule || []).filter((payment) =>
+      payment.kind === "deposit" || payment.kind === "final" || payment.title.trim() || Number(payment.amount) > 0 || payment.dueDate
+    );
+    if (form.paymentStructure === "deposit_final") {
+      const deposit = paymentSchedule.find((payment) => payment.kind === "deposit") || createPaymentEntry({ kind: "deposit", title: "Deposit" });
+      const finalPayment = paymentSchedule.find((payment) => payment.kind === "final") || createPaymentEntry({ kind: "final", title: "Final payment" });
+      const depositAmount = Math.max(0, Number(deposit.amount) || 0);
+      paymentSchedule = [
+        { ...deposit, kind: "deposit", title: "Deposit", amount: String(depositAmount) },
+        { ...finalPayment, kind: "final", title: "Final payment", amount: String(Math.max(0, expenseTotal - depositAmount)) },
+      ];
+    }
+    const payload = { ...costPayload, paymentStructure: form.paymentStructure, paymentSchedule };
 
     setSaveState("saving");
     if (editingId) {
@@ -1183,18 +1262,19 @@ function GoogleFontImport() {
       .dialog-close { width: 32px; height: 32px; flex: 0 0 auto; border: 0; border-radius: 50%; background: ${paper}; color: ${ink}; font-size: 22px; line-height: 1; }
       .category-context-field { max-width: 330px; padding: 18px 0 2px; }
       .expense-form-section { display: grid; gap: 12px; padding: 20px 0; border-bottom: 1px solid ${line}; }
+      .expense-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
       .expense-section-label { display: flex; align-items: center; gap: 8px; color: ${forest}; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
       .expense-section-label span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: ${forestSoft}; font: 500 10px/1 'DM Mono', monospace; }
+      .cost-mode-toggle { padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 11px; font-weight: 600; }
+      .cost-mode-toggle:hover { background: ${forestSoft}; }
       .expense-grid { display: grid; gap: 12px; }
       .expense-grid-main { grid-template-columns: minmax(150px,.75fr) minmax(240px,1.5fr); }
       .expense-grid-two { grid-template-columns: repeat(2,minmax(0,1fr)); }
       .expense-grid-three { grid-template-columns: repeat(3,minmax(0,1fr)); }
-      .deposit-section { padding: 16px; margin-top: 18px; border: 1px solid #E3CFAB; border-radius: 3px; background: rgba(246,229,200,.42); }
-      .check-row { display: flex; align-items: flex-start; gap: 10px; color: ${ink}; font-size: 13px; cursor: pointer; }
-      .check-row input, .paid-check-card input { margin-top: 2px; accent-color: ${forest}; }
-      .check-row span, .paid-check-card span { display: grid; gap: 2px; }
-      .check-row small, .paid-check-card small { color: #7D7467; font-size: 10px; line-height: 1.35; }
-      .deposit-fields { padding-top: 4px; }
+      .simple-cost-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
+      .paid-check-card input { margin-top: 2px; accent-color: ${forest}; }
+      .paid-check-card span { display: grid; gap: 2px; }
+      .paid-check-card small { color: #7D7467; font-size: 10px; line-height: 1.35; }
       .paid-check-card { display: flex; align-items: center; gap: 9px; min-height: 55px; padding: 10px 12px; border: 1px solid ${line}; border-radius: 7px; background: #fff; cursor: pointer; }
       .input-affix { position: relative; }
       .input-affix > span { position: absolute; z-index: 1; left: 11px; top: 8px; color: #7D7467; font-size: 12px; }
@@ -1203,7 +1283,7 @@ function GoogleFontImport() {
       .input-affix.suffix > input { padding-left: 10px !important; padding-right: 26px !important; }
       .cost-preview { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; overflow: hidden; border: 1px solid ${line}; border-radius: 3px; background: ${line}; }
       .cost-preview > div { display: grid; gap: 3px; padding: 11px 13px; background: #fff; }
-      .cost-preview span, .remaining-preview span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+      .cost-preview span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
       .cost-preview strong { color: ${ink}; font-family: ${serif}; font-size: 16px; }
       .cost-preview .cost-total { background: ${forestSoft}; }
       .cost-preview .cost-total strong { color: ${forest}; }
@@ -1216,9 +1296,24 @@ function GoogleFontImport() {
       .line-item-total strong { color: ${forest}; font: 500 17px/1 ${serif}; }
       .add-line-item { justify-self: start; padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
       .cost-preview.itemized-preview { grid-template-columns: repeat(4,1fr); }
-      .payment-secondary { align-items: end; }
-      .remaining-preview { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 8px 11px; border-radius: 3px; background: ${forestSoft}; }
-      .remaining-preview strong { color: ${forest}; font-family: ${serif}; }
+      .payment-structure-prompt { margin-bottom: 8px; color: ${ink}; font-size: 13px; font-weight: 600; }
+      .payment-structure-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+      .payment-structure-card { display: grid; gap: 4px; min-height: 78px; padding: 14px; text-align: left; border: 1px solid ${line}; border-radius: 3px; background: #fff; color: ${ink}; }
+      .payment-structure-card strong { font-family: ${serif}; font-size: 16px; }
+      .payment-structure-card span { color: #7D7467; font-size: 11px; line-height: 1.4; }
+      .payment-structure-card.active { border-color: ${forest}; background: ${forestSoft}; box-shadow: inset 0 0 0 1px ${forest}; }
+      .payment-schedule-list { display: grid; gap: 10px; }
+      .payment-entry-card { display: grid; gap: 11px; padding: 14px; border: 1px solid ${line}; border-radius: 3px; background: #FFFEFA; }
+      .payment-entry-heading { display: flex; justify-content: space-between; color: ${forest}; font: 500 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
+      .payment-entry-heading button { border: 0; background: transparent; color: ${rose}; padding: 0; font-size: 10px; font-weight: 600; }
+      .payment-paid-toggle { display: inline-flex; width: fit-content; align-items: center; gap: 7px; color: ${ink}; font-size: 12px; font-weight: 600; cursor: pointer; }
+      .payment-paid-toggle input, .payment-paid-card input { accent-color: ${forest}; }
+      .paid-details { padding-top: 10px; border-top: 1px dashed ${line}; }
+      .payment-summary { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; overflow: hidden; border: 1px solid ${line}; border-radius: 3px; background: ${line}; }
+      .payment-summary > div:not(.unscheduled-note) { display: flex; justify-content: space-between; gap: 10px; padding: 10px 12px; background: ${forestSoft}; }
+      .payment-summary span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+      .payment-summary strong { color: ${forest}; font-family: ${serif}; }
+      .payment-summary .unscheduled-note { grid-column: 1 / -1; padding: 8px 12px; background: ${brassSoft}; color: #7D5C37; font-size: 11px; }
       .notes-section { border-bottom: 0; }
       .field-error { margin-top: 4px; color: ${rose}; font-size: 11px; }
       .expense-form-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; background: linear-gradient(transparent, #fffdf7 18%); }
@@ -1262,11 +1357,14 @@ function GoogleFontImport() {
         .modal-backdrop { padding: 12px; place-items: end center; }
         .expense-dialog { max-height: calc(100vh - 24px); }
         .expense-form-shell { padding: 22px 17px; }
-        .expense-grid-main, .expense-grid-two, .expense-grid-three { grid-template-columns: 1fr; }
+        .expense-grid-main, .expense-grid-two, .expense-grid-three, .simple-cost-grid { grid-template-columns: 1fr; }
+        .expense-section-heading { align-items: flex-start; }
         .cost-preview { grid-template-columns: 1fr; }
         .cost-preview.itemized-preview { grid-template-columns: repeat(2,1fr); }
         .line-item-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
         .line-item-grid > div:first-child { grid-column: 1 / -1; }
+        .payment-structure-options { grid-template-columns: 1fr; }
+        .payment-summary { grid-template-columns: 1fr; }
         .settings-card { padding: 18px 14px; }
         .settings-card-copy { grid-template-columns: 1fr; }
         .category-settings-heading { display: grid; }
@@ -1526,7 +1624,6 @@ function SettingsPage({
 function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onEditItem, onDeleteItem, onRemoveCategory }) {
   const budget = Number(category.budget) || 0;
   const remaining = budget - totals.paid;
-  const cfg = fieldConfigFor(category.id, [category]);
   return (
     <div>
       <button type="button" className="breadcrumb" onClick={onBack}>Summary <span>›</span> {category.name}</button>
@@ -1567,7 +1664,7 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
               <tr style={{ textAlign: "left", color: "#8a8a80" }}>
                 <th style={thStyle}>Item</th>
                 <th style={thStyle}>Vendor</th>
-                {cfg.showQuantity && <th style={{ ...thStyle, textAlign: "right" }}>Qty</th>}
+                <th style={{ ...thStyle, textAlign: "right" }}>Qty</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Paid</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Planned</th>
@@ -1586,7 +1683,7 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
                           Deposit {CAD(it.depositAmount)}{it.depositDueDate ? ` due ${it.depositDueDate}` : ""} {t.depositCovered ? "· paid" : "· pending"}
                         </div>
                       )}
-                      {it.lineItems?.length > 0 && (
+                      {it.costMode === "itemized" && it.lineItems?.length > 0 && (
                         <div style={{ fontSize: 11, marginTop: 3, color: forest }}>
                           {it.lineItems.length} itemized {it.lineItems.length === 1 ? "cost" : "costs"}
                         </div>
@@ -1594,7 +1691,11 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
                       {it.notes && <div style={{ fontSize: 12, color: "#8a8a80" }}>{it.notes}</div>}
                     </td>
                     <td style={tdStyle}>{it.vendor || "—"}</td>
-                    {cfg.showQuantity && <td style={{ ...tdStyle, textAlign: "right" }}>{cfg.itemized ? (it.lineItems?.length || 1) : it.quantity}</td>}
+                    <td style={{ ...tdStyle, textAlign: "right" }}>
+                      {it.costMode === "itemized"
+                        ? (it.lineItems || []).reduce((sum, lineItem) => sum + (Number(lineItem.quantity) || 0), 0)
+                        : it.quantity}
+                    </td>
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 500 }}>{CAD(t.total)}</td>
                     <td style={{ ...tdStyle, textAlign: "right", color: forest }}>
                       <div>{CAD(t.paid)}</div>
@@ -1622,30 +1723,51 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
 
 function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel }) {
   const cfg = fieldConfigFor(form.categoryId, categories);
-  const quantity = cfg.showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1;
-  const itemizedTotals = cfg.itemized ? lineItemTotals(form.lineItems) : null;
+  const isItemized = form.costMode === "itemized";
+  const quantity = Math.max(0, Number(form.quantity) || 0);
+  const itemizedTotals = isItemized ? lineItemTotals(form.lineItems) : null;
   const subtotal = itemizedTotals?.subtotal ?? (quantity * (Math.max(0, Number(form.unitCost) || 0)));
   const taxAmount = itemizedTotals?.taxAmount ?? (subtotal * (Math.max(0, Number(form.taxRate) || 0) / 100));
-  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? 0;
-  const total = itemizedTotals?.total ?? (subtotal + taxAmount);
-  const remaining = Math.max(0, total - (Math.max(0, Number(form.amountPaid) || 0)));
+  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? (subtotal * (Math.max(0, Number(form.serviceFeeRate) || 0) / 100));
+  const total = itemizedTotals?.total ?? (subtotal + taxAmount + serviceFeeAmount);
+  const depositPayment = form.paymentSchedule?.find((payment) => payment.kind === "deposit");
+  const finalPayment = form.paymentSchedule?.find((payment) => payment.kind === "final");
+  const effectivePaymentSchedule = form.paymentStructure === "deposit_final"
+    ? [
+      depositPayment || createPaymentEntry({ kind: "deposit", title: "Deposit" }),
+      { ...(finalPayment || createPaymentEntry({ kind: "final", title: "Final payment" })), amount: String(Math.max(0, total - (Number(depositPayment?.amount) || 0))) },
+    ]
+    : (form.paymentSchedule || []);
+  const paymentTotals = paymentScheduleTotals(effectivePaymentSchedule);
+  const remaining = Math.max(0, total - paymentTotals.paid);
+  const unscheduled = Math.max(0, total - paymentTotals.scheduled);
 
-  function updateDepositAmount(value) {
-    setForm((current) => {
-      const priorDeposit = Number(current.depositAmount) || 0;
-      const currentPaid = Number(current.amountPaid) || 0;
-      const nextPaid = current.depositPaid && currentPaid <= priorDeposit ? value : current.amountPaid;
-      return { ...current, depositAmount: value, amountPaid: nextPaid };
-    });
-  }
-
-  function updateDepositPaid(checked) {
+  function choosePaymentStructure(structure) {
     setForm((current) => ({
       ...current,
-      depositPaid: checked,
-      amountPaid: checked
-        ? String(Math.max(Number(current.amountPaid) || 0, Number(current.depositAmount) || 0))
-        : current.amountPaid,
+      paymentStructure: structure,
+      paymentSchedule: structure === "deposit_final"
+        ? [
+          createPaymentEntry({ kind: "deposit", title: "Deposit" }),
+          createPaymentEntry({ kind: "final", title: "Final payment", amount: String(total) }),
+        ]
+        : [createPaymentEntry({ title: "Payment 1" })],
+    }));
+  }
+
+  function updatePaymentEntry(id, field, value) {
+    setForm((current) => ({
+      ...current,
+      paymentSchedule: current.paymentSchedule.map((payment) => payment.id === id ? { ...payment, [field]: value } : payment),
+    }));
+  }
+
+  function removePaymentEntry(id) {
+    setForm((current) => ({
+      ...current,
+      paymentSchedule: current.paymentSchedule.length > 1
+        ? current.paymentSchedule.filter((payment) => payment.id !== id)
+        : [createPaymentEntry({ title: "Payment 1" })],
     }));
   }
 
@@ -1662,6 +1784,22 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
       lineItems: current.lineItems.length > 1
         ? current.lineItems.filter((lineItem) => lineItem.id !== id)
         : [createLineItem()],
+    }));
+  }
+
+  function switchCostMode(costMode) {
+    setForm((current) => ({
+      ...current,
+      costMode,
+      lineItems: costMode === "itemized" && (current.lineItems || []).length === 0
+        ? [createLineItem({
+          title: current.description,
+          quantity: current.quantity || "1",
+          unitCost: current.unitCost,
+          taxRate: current.taxRate || "0",
+          serviceFeeRate: current.serviceFeeRate || "0",
+        })]
+        : (current.lineItems || []),
     }));
   }
 
@@ -1700,30 +1838,14 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
           </Field>
         </section>
 
-        <section className="expense-form-section deposit-section">
-          <label className="check-row">
-            <input type="checkbox" checked={form.requiresDeposit} onChange={(e) => setForm((f) => ({ ...f, requiresDeposit: e.target.checked, depositPaid: e.target.checked ? f.depositPaid : false }))} />
-            <span><strong>This vendor requires a deposit</strong><small>Track the amount and due date separately.</small></span>
-          </label>
-          {form.requiresDeposit && (
-            <div className="expense-grid expense-grid-three deposit-fields">
-              <Field label="Deposit amount">
-                <input type="number" min="0" step="0.01" value={form.depositAmount} onChange={(e) => updateDepositAmount(e.target.value)} placeholder="0.00" style={inputStyle} />
-              </Field>
-              <Field label="Deposit due date">
-                <input type="date" value={form.depositDueDate} onChange={(e) => setForm((f) => ({ ...f, depositDueDate: e.target.value }))} style={inputStyle} />
-              </Field>
-              <label className="paid-check-card">
-                <input type="checkbox" checked={form.depositPaid} onChange={(e) => updateDepositPaid(e.target.checked)} />
-                <span><strong>Paid</strong><small>Adds the deposit to amount paid</small></span>
-              </label>
-            </div>
-          )}
-        </section>
-
         <section className="expense-form-section">
-          <div className="expense-section-label"><span>2</span> {cfg.itemized ? "Itemized costs" : "Cost"}</div>
-          {cfg.itemized ? (
+          <div className="expense-section-heading">
+            <div className="expense-section-label"><span>2</span> Cost</div>
+            <button type="button" className="cost-mode-toggle" aria-pressed={isItemized} onClick={() => switchCostMode(isItemized ? "simple" : "itemized")}>
+              {isItemized ? "Use simple cost" : "Switch to itemized costs"}
+            </button>
+          </div>
+          {isItemized ? (
             <>
               <div className="line-items-list">
                 {form.lineItems.map((lineItem, index) => {
@@ -1766,22 +1888,24 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
             </>
           ) : (
             <>
-              <div className={`expense-grid ${cfg.showQuantity ? "expense-grid-three" : "expense-grid-two"}`}>
-                {cfg.showQuantity && (
-                  <Field label={cfg.quantityLabel}>
-                    <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
-                  </Field>
-                )}
+              <div className="expense-grid simple-cost-grid">
+                <Field label={cfg.quantityLabel}>
+                  <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
+                </Field>
                 <Field label={cfg.costLabel}>
                   <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.unitCost} onChange={(e) => setForm((f) => ({ ...f, unitCost: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
                 </Field>
                 <Field label="Tax">
                   <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={form.taxRate} onChange={(e) => setForm((f) => ({ ...f, taxRate: e.target.value }))} placeholder="0" style={inputStyle} /><span>%</span></div>
                 </Field>
+                <Field label="Service fee">
+                  <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={form.serviceFeeRate} onChange={(e) => setForm((f) => ({ ...f, serviceFeeRate: e.target.value }))} placeholder="0" style={inputStyle} /><span>%</span></div>
+                </Field>
               </div>
-              <div className="cost-preview" aria-live="polite">
+              <div className="cost-preview itemized-preview" aria-live="polite">
                 <div><span>Subtotal</span><strong>{CAD(subtotal)}</strong></div>
                 <div><span>Tax ({Number(form.taxRate) || 0}%)</span><strong>{CAD(taxAmount)}</strong></div>
+                <div><span>Service fees ({Number(form.serviceFeeRate) || 0}%)</span><strong>{CAD(serviceFeeAmount)}</strong></div>
                 <div className="cost-total"><span>Total</span><strong>{CAD(total)}</strong></div>
               </div>
             </>
@@ -1790,30 +1914,98 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
 
         <section className="expense-form-section">
           <div className="expense-section-label"><span>3</span> Payment</div>
-          <div className="expense-grid expense-grid-three">
-            <Field label="Amount paid">
-              <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.amountPaid} onChange={(e) => setForm((f) => ({ ...f, amountPaid: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
-            </Field>
-            <Field label="Who paid">
-              <input value={form.whoPaid} onChange={(e) => setForm((f) => ({ ...f, whoPaid: e.target.value }))} placeholder="e.g. Alex" style={inputStyle} />
-            </Field>
-            <Field label="Payment method">
-              <select value={form.paymentMethod} onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))} style={inputStyle}>
-                <option value="">Select method</option>
-                <option value="cash">Cash</option>
-                <option value="credit">Credit</option>
-                <option value="debit">Debit</option>
-                <option value="etransfer">e-Transfer</option>
-                <option value="other">Other</option>
-              </select>
-            </Field>
+          <div>
+            <div className="payment-structure-prompt">How will this vendor be paid?</div>
+            <div className="payment-structure-options">
+              <button type="button" className={`payment-structure-card${form.paymentStructure === "itemized" ? " active" : ""}`} onClick={() => choosePaymentStructure("itemized")}>
+                <strong>Itemized payments</strong>
+                <span>Flexible installments such as monthly payments.</span>
+              </button>
+              <button type="button" className={`payment-structure-card${form.paymentStructure === "deposit_final" ? " active" : ""}`} onClick={() => choosePaymentStructure("deposit_final")}>
+                <strong>Deposit + final</strong>
+                <span>One deposit followed by the remaining balance.</span>
+              </button>
+            </div>
+            {itemError === "Choose a payment structure." && <div className="field-error">{itemError}</div>}
           </div>
-          <div className="expense-grid expense-grid-two payment-secondary">
-            <Field label="Balance due date (optional)">
-              <input type="date" value={form.balanceDueDate} onChange={(e) => setForm((f) => ({ ...f, balanceDueDate: e.target.value }))} style={inputStyle} />
-            </Field>
-            <div className="remaining-preview"><span>Remaining after payment</span><strong>{CAD(remaining)}</strong></div>
-          </div>
+
+          {form.paymentStructure === "itemized" && (
+            <>
+              <div className="payment-schedule-list">
+                {form.paymentSchedule.map((payment, index) => (
+                  <div className="payment-entry-card" key={payment.id}>
+                    <div className="payment-entry-heading">
+                      <span>Payment {index + 1}</span>
+                      <button type="button" onClick={() => removePaymentEntry(payment.id)}>Remove</button>
+                    </div>
+                    <div className="expense-grid expense-grid-three">
+                      <Field label="Payment title">
+                        <input value={payment.title} onChange={(e) => updatePaymentEntry(payment.id, "title", e.target.value)} placeholder="e.g. June monthly payment" style={inputStyle} />
+                      </Field>
+                      <Field label="Amount">
+                        <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={payment.amount} onChange={(e) => updatePaymentEntry(payment.id, "amount", e.target.value)} placeholder="0.00" style={inputStyle} /></div>
+                      </Field>
+                      <Field label="Due date (optional)">
+                        <input type="date" value={payment.dueDate} onChange={(e) => updatePaymentEntry(payment.id, "dueDate", e.target.value)} style={inputStyle} />
+                      </Field>
+                    </div>
+                    <label className="payment-paid-toggle">
+                      <input type="checkbox" checked={payment.paid} onChange={(e) => updatePaymentEntry(payment.id, "paid", e.target.checked)} />
+                      <span>Paid</span>
+                    </label>
+                    {payment.paid && (
+                      <div className="expense-grid expense-grid-two paid-details">
+                        <Field label="Who paid">
+                          <input value={payment.whoPaid} onChange={(e) => updatePaymentEntry(payment.id, "whoPaid", e.target.value)} placeholder="e.g. Alex" style={inputStyle} />
+                        </Field>
+                        <PaymentMethodField value={payment.paymentMethod} onChange={(value) => updatePaymentEntry(payment.id, "paymentMethod", value)} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="add-line-item" onClick={() => setForm((current) => ({ ...current, paymentSchedule: [...current.paymentSchedule, createPaymentEntry({ title: `Payment ${current.paymentSchedule.length + 1}` })] }))}>+ Add another payment</button>
+            </>
+          )}
+
+          {form.paymentStructure === "deposit_final" && (
+            <div className="payment-schedule-list">
+              {effectivePaymentSchedule.map((payment) => (
+                <div className="payment-entry-card" key={payment.id}>
+                  <div className="payment-entry-heading"><span>{payment.title}</span></div>
+                  <div className="expense-grid expense-grid-three">
+                    <Field label={payment.kind === "deposit" ? "Deposit amount" : "Final payment"}>
+                      <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={payment.amount} readOnly={payment.kind === "final"} onChange={(e) => updatePaymentEntry(payment.id, "amount", e.target.value)} style={{ ...inputStyle, background: payment.kind === "final" ? "#F2EFE6" : "#fff" }} /></div>
+                    </Field>
+                    <Field label="Due date (optional)">
+                      <input type="date" value={payment.dueDate} onChange={(e) => updatePaymentEntry(payment.id, "dueDate", e.target.value)} style={inputStyle} />
+                    </Field>
+                    <label className="paid-check-card payment-paid-card">
+                      <input type="checkbox" checked={payment.paid} onChange={(e) => updatePaymentEntry(payment.id, "paid", e.target.checked)} />
+                      <span><strong>Paid</strong><small>Counts toward the amount paid</small></span>
+                    </label>
+                  </div>
+                  {payment.paid && (
+                    <div className="expense-grid expense-grid-two paid-details">
+                      <Field label="Who paid">
+                        <input value={payment.whoPaid} onChange={(e) => updatePaymentEntry(payment.id, "whoPaid", e.target.value)} placeholder="e.g. Alex" style={inputStyle} />
+                      </Field>
+                      <PaymentMethodField value={payment.paymentMethod} onChange={(value) => updatePaymentEntry(payment.id, "paymentMethod", value)} />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {form.paymentStructure && (
+            <div className="payment-summary" aria-live="polite">
+              <div><span>Scheduled</span><strong>{CAD(paymentTotals.scheduled)}</strong></div>
+              <div><span>Paid</span><strong>{CAD(paymentTotals.paid)}</strong></div>
+              <div><span>Remaining</span><strong>{CAD(remaining)}</strong></div>
+              {unscheduled > 0.004 && <div className="unscheduled-note">{CAD(unscheduled)} of the expense still needs a scheduled payment.</div>}
+            </div>
+          )}
         </section>
 
         <section className="expense-form-section notes-section">
@@ -1852,6 +2044,21 @@ function LegendRow({ color, border, label, value }) {
       </span>
       <span style={{ fontWeight: 500 }}>{value}</span>
     </div>
+  );
+}
+
+function PaymentMethodField({ value, onChange }) {
+  return (
+    <Field label="Payment method">
+      <select value={value} onChange={(event) => onChange(event.target.value)} style={inputStyle}>
+        <option value="">Select method</option>
+        <option value="cash">Cash</option>
+        <option value="credit">Credit</option>
+        <option value="debit">Debit</option>
+        <option value="etransfer">e-Transfer</option>
+        <option value="other">Other</option>
+      </select>
+    </Field>
   );
 }
 
