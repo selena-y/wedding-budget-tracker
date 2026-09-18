@@ -134,8 +134,12 @@ function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
     taxRate: "0",
     serviceFeeRate: "0",
     costMode: "simple",
-    paymentStructure: "",
-    paymentSchedule: [],
+    paymentStructure: "deposit_final",
+    paymentSchedule: [
+      createPaymentEntry({ kind: "deposit", title: "Deposit" }),
+      createPaymentEntry({ kind: "final", title: "Final payment" }),
+    ],
+    paymentDrafts: {},
     lineItems: [],
     notes: "",
   };
@@ -817,6 +821,7 @@ export default function WeddingBudgetTracker() {
       costMode,
       paymentStructure: it.paymentStructure || "itemized",
       paymentSchedule,
+      paymentDrafts: {},
       lineItems,
       notes: it.notes || "",
     });
@@ -1296,12 +1301,6 @@ function GoogleFontImport() {
       .line-item-total strong { color: ${forest}; font: 500 17px/1 ${serif}; }
       .add-line-item { justify-self: start; padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
       .cost-preview.itemized-preview { grid-template-columns: repeat(4,1fr); }
-      .payment-structure-prompt { margin-bottom: 8px; color: ${ink}; font-size: 13px; font-weight: 600; }
-      .payment-structure-options { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
-      .payment-structure-card { display: grid; gap: 4px; min-height: 78px; padding: 14px; text-align: left; border: 1px solid ${line}; border-radius: 3px; background: #fff; color: ${ink}; }
-      .payment-structure-card strong { font-family: ${serif}; font-size: 16px; }
-      .payment-structure-card span { color: #7D7467; font-size: 11px; line-height: 1.4; }
-      .payment-structure-card.active { border-color: ${forest}; background: ${forestSoft}; box-shadow: inset 0 0 0 1px ${forest}; }
       .payment-schedule-list { display: grid; gap: 10px; }
       .payment-entry-card { display: grid; gap: 11px; padding: 14px; border: 1px solid ${line}; border-radius: 3px; background: #FFFEFA; }
       .payment-entry-heading { display: flex; justify-content: space-between; color: ${forest}; font: 500 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
@@ -1363,7 +1362,6 @@ function GoogleFontImport() {
         .cost-preview.itemized-preview { grid-template-columns: repeat(2,1fr); }
         .line-item-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
         .line-item-grid > div:first-child { grid-column: 1 / -1; }
-        .payment-structure-options { grid-template-columns: 1fr; }
         .payment-summary { grid-template-columns: 1fr; }
         .settings-card { padding: 18px 14px; }
         .settings-card-copy { grid-template-columns: 1fr; }
@@ -1742,17 +1740,25 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
   const remaining = Math.max(0, total - paymentTotals.paid);
   const unscheduled = Math.max(0, total - paymentTotals.scheduled);
 
-  function choosePaymentStructure(structure) {
-    setForm((current) => ({
-      ...current,
-      paymentStructure: structure,
-      paymentSchedule: structure === "deposit_final"
+  function switchPaymentStructure(structure) {
+    setForm((current) => {
+      const savedDrafts = {
+        ...(current.paymentDrafts || {}),
+        [current.paymentStructure]: current.paymentSchedule,
+      };
+      const nextSchedule = savedDrafts[structure] || (structure === "deposit_final"
         ? [
           createPaymentEntry({ kind: "deposit", title: "Deposit" }),
           createPaymentEntry({ kind: "final", title: "Final payment", amount: String(total) }),
         ]
-        : [createPaymentEntry({ title: "Payment 1" })],
-    }));
+        : [createPaymentEntry({ title: "Payment 1" })]);
+      return {
+        ...current,
+        paymentStructure: structure,
+        paymentSchedule: nextSchedule,
+        paymentDrafts: savedDrafts,
+      };
+    });
   }
 
   function updatePaymentEntry(id, field, value) {
@@ -1913,20 +1919,16 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
         </section>
 
         <section className="expense-form-section">
-          <div className="expense-section-label"><span>3</span> Payment</div>
-          <div>
-            <div className="payment-structure-prompt">How will this vendor be paid?</div>
-            <div className="payment-structure-options">
-              <button type="button" className={`payment-structure-card${form.paymentStructure === "itemized" ? " active" : ""}`} onClick={() => choosePaymentStructure("itemized")}>
-                <strong>Itemized payments</strong>
-                <span>Flexible installments such as monthly payments.</span>
-              </button>
-              <button type="button" className={`payment-structure-card${form.paymentStructure === "deposit_final" ? " active" : ""}`} onClick={() => choosePaymentStructure("deposit_final")}>
-                <strong>Deposit + final</strong>
-                <span>One deposit followed by the remaining balance.</span>
-              </button>
-            </div>
-            {itemError === "Choose a payment structure." && <div className="field-error">{itemError}</div>}
+          <div className="expense-section-heading">
+            <div className="expense-section-label"><span>3</span> Payment</div>
+            <button
+              type="button"
+              className="cost-mode-toggle"
+              aria-pressed={form.paymentStructure === "itemized"}
+              onClick={() => switchPaymentStructure(form.paymentStructure === "deposit_final" ? "itemized" : "deposit_final")}
+            >
+              {form.paymentStructure === "deposit_final" ? "Switch to itemized payments" : "Use deposit + final"}
+            </button>
           </div>
 
           {form.paymentStructure === "itemized" && (
