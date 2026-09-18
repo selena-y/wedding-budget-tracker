@@ -15,7 +15,7 @@ const DEFAULT_CATEGORIES = [
   { id: "officiant", name: "Officiant", budget: 0 },
   { id: "photo", name: "Photography & Videography", budget: 0 },
   { id: "misc", name: "Misc", budget: 0 },
-].map((category) => ({ ...category, categoryType: "default", isVisible: true }));
+].map((category, index) => ({ ...category, categoryType: "default", isVisible: true, sortOrder: index }));
 
 const DEFAULT_CATEGORY_NAMES = new Set(DEFAULT_CATEGORIES.map((category) => category.name));
 const isDefaultCategory = (category) =>
@@ -106,6 +106,7 @@ function dbCategoryToApp(row) {
     budget: Number(row.budget) || 0,
     isVisible: row.is_visible !== false,
     categoryType: row.category_type || (DEFAULT_CATEGORY_NAMES.has(row.name) ? "default" : "custom"),
+    sortOrder: Number.isFinite(Number(row.sort_order)) ? Number(row.sort_order) : 0,
   };
 }
 
@@ -325,6 +326,8 @@ export default function WeddingBudgetTracker() {
   const [showAddCat, setShowAddCat] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
   const [editingCategoryName, setEditingCategoryName] = useState("");
+  const [draggedCategoryId, setDraggedCategoryId] = useState(null);
+  const [dropTargetCategoryId, setDropTargetCategoryId] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [setupError, setSetupError] = useState("");
   const [form, setForm] = useState(emptyItemForm(DEFAULT_CATEGORIES[0].id));
@@ -394,7 +397,7 @@ export default function WeddingBudgetTracker() {
         }
 
         const [{ data: categoryRowsInitial, error: categoryError }, { data: itemRows, error: itemErrorResult }] = await Promise.all([
-          supabase.from("categories").select("id, name, budget, is_visible, category_type").eq("wedding_id", wedding.id).order("created_at"),
+          supabase.from("categories").select("id, name, budget, is_visible, category_type, sort_order").eq("wedding_id", wedding.id).order("sort_order").order("created_at"),
           supabase.from("items").select("*").eq("wedding_id", wedding.id).order("created_at"),
         ]);
 
@@ -405,8 +408,8 @@ export default function WeddingBudgetTracker() {
         if (categoryRows.length === 0) {
           const { data: seededCategories, error: seedError } = await supabase
             .from("categories")
-            .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0, is_visible: true, category_type: "default" })))
-            .select("id, name, budget, is_visible, category_type");
+            .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0, is_visible: true, category_type: "default", sort_order: c.sortOrder })))
+            .select("id, name, budget, is_visible, category_type, sort_order");
           if (seedError) throw seedError;
           categoryRows = seededCategories || [];
         }
@@ -461,14 +464,19 @@ export default function WeddingBudgetTracker() {
     return map;
   }, [categories, items]);
 
-  const visibleCategories = useMemo(
-    () => categories.filter((category) => category.isVisible !== false),
+  const orderedCategories = useMemo(
+    () => [...categories].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)),
     [categories]
   );
 
+  const visibleCategories = useMemo(
+    () => orderedCategories.filter((category) => category.isVisible !== false),
+    [orderedCategories]
+  );
+
   const hiddenCategoryIds = useMemo(
-    () => categories.filter((category) => category.isVisible === false).map((category) => category.id),
-    [categories]
+    () => orderedCategories.filter((category) => category.isVisible === false).map((category) => category.id),
+    [orderedCategories]
   );
 
   function categoryTotals(catId) {
@@ -535,8 +543,8 @@ export default function WeddingBudgetTracker() {
     setSaveState("saving");
     const { data, error } = await supabase
       .from("categories")
-      .insert({ wedding_id: weddingId, name, budget: 0, is_visible: true, category_type: "custom" })
-      .select("id, name, budget, is_visible, category_type")
+      .insert({ wedding_id: weddingId, name, budget: 0, is_visible: true, category_type: "custom", sort_order: orderedCategories.length })
+      .select("id, name, budget, is_visible, category_type, sort_order")
       .single();
     if (error) {
       console.error(error);
@@ -605,6 +613,39 @@ export default function WeddingBudgetTracker() {
       return;
     }
     if (page === id) setPage("summary");
+    setSaveState("saved");
+  }
+
+  async function reorderVisibleCategories(draggedId, targetId) {
+    if (!draggedId || !targetId || draggedId === targetId || !supabase || !weddingId) return;
+    const draggedIndex = visibleCategories.findIndex((category) => category.id === draggedId);
+    const targetIndex = visibleCategories.findIndex((category) => category.id === targetId);
+    if (draggedIndex < 0 || targetIndex < 0) return;
+
+    const dragged = visibleCategories[draggedIndex];
+    const reorderedVisible = visibleCategories.filter((category) => category.id !== draggedId);
+    reorderedVisible.splice(Math.min(targetIndex, reorderedVisible.length), 0, dragged);
+
+    let visibleIndex = 0;
+    const nextCategories = orderedCategories.map((category) =>
+      category.isVisible === false ? category : reorderedVisible[visibleIndex++]
+    ).map((category, index) => ({ ...category, sortOrder: index }));
+
+    const previous = categories;
+    setCategories(nextCategories);
+    setSaveState("saving");
+    const results = await Promise.all(
+      nextCategories.map((category) => supabase
+        .from("categories")
+        .update({ sort_order: category.sortOrder })
+        .eq("id", category.id)
+        .eq("wedding_id", weddingId))
+    );
+    if (results.some((result) => result.error)) {
+      setCategories(previous);
+      setSaveState("error");
+      return;
+    }
     setSaveState("saved");
   }
 
@@ -768,8 +809,8 @@ export default function WeddingBudgetTracker() {
 
       const { data: categoryRows, error: categoryError } = await supabase
         .from("categories")
-        .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0, is_visible: true, category_type: "default" })))
-        .select("id, name, budget, is_visible, category_type");
+        .insert(DEFAULT_CATEGORIES.map((c) => ({ wedding_id: wedding.id, name: c.name, budget: 0, is_visible: true, category_type: "default", sort_order: c.sortOrder })))
+        .select("id, name, budget, is_visible, category_type, sort_order");
       if (categoryError) throw categoryError;
 
       const { error: activateError } = await supabase
@@ -894,6 +935,30 @@ export default function WeddingBudgetTracker() {
               active={page === category.id}
               onClick={() => setPage(category.id)}
               label={category.name}
+              draggable
+              dragging={draggedCategoryId === category.id}
+              dropTarget={dropTargetCategoryId === category.id && draggedCategoryId !== category.id}
+              onDragStart={(event) => {
+                setDraggedCategoryId(category.id);
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", category.id);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDropTargetCategoryId(category.id);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId = event.dataTransfer.getData("text/plain") || draggedCategoryId;
+                reorderVisibleCategories(sourceId, category.id);
+                setDraggedCategoryId(null);
+                setDropTargetCategoryId(null);
+              }}
+              onDragEnd={() => {
+                setDraggedCategoryId(null);
+                setDropTargetCategoryId(null);
+              }}
             />
           ))}
         </div>
@@ -950,7 +1015,7 @@ export default function WeddingBudgetTracker() {
             onBack={() => { setPage(settingsFrom || "summary"); setSettingsFrom(null); }}
             overallBudget={overallBudget}
             setOverallBudget={setOverallBudget}
-            categories={categories}
+            categories={orderedCategories}
             hiddenCategoryIds={hiddenCategoryIds}
             toggleCategoryVisibility={toggleCategoryVisibility}
             showAddCat={showAddCat}
@@ -1004,6 +1069,14 @@ function GoogleFontImport() {
       .brand-mark { margin-bottom: 8px; }
       .nav-section-label { color: #8A8376; margin: 22px 8px 8px; }
       .category-nav { display: grid; gap: 1px; }
+      .nav-item { position: relative; outline: none; }
+      .nav-item:focus, .nav-item:focus-visible { outline: none; }
+      .nav-item[draggable="true"] { cursor: grab; }
+      .nav-item[draggable="true"]:active { cursor: grabbing; }
+      .nav-item.dragging { opacity: .45; }
+      .nav-item.drop-target { box-shadow: inset 0 3px 0 ${brass}; }
+      .drag-handle { margin-left: auto; color: #9A9183; font: 600 14px/1 'DM Mono', monospace; opacity: 0; transition: opacity .18s ease; }
+      .nav-item:hover .drag-handle, .nav-item:focus-visible .drag-handle { opacity: 1; }
       .add-item-button { box-shadow: 4px 4px 0 rgba(192,132,79,.30); transform: rotate(-.5deg); }
       .page-kicker { font-family: 'DM Mono', monospace; letter-spacing: .14em; font-size: 10px; color: ${brass}; text-transform: uppercase; margin-bottom: 10px; }
       .summary-hero { position: relative; padding: 34px 36px 31px; margin: 8px 10px 30px 3px; border: 1px solid #DCCFB5; border-radius: 3px; background: #FFFDF6; color: ${ink}; overflow: visible; box-shadow: 8px 9px 0 #DDE7D7, 0 18px 45px rgba(55,50,41,.10); transform: rotate(-.3deg); }
@@ -1073,19 +1146,29 @@ function GoogleFontImport() {
   );
 }
 
-function NavItem({ active, onClick, label }) {
+function NavItem({
+  active, onClick, label, draggable = false, dragging = false, dropTarget = false,
+  onDragStart, onDragOver, onDrop, onDragEnd,
+}) {
   return (
     <button
       onClick={onClick}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      className={`nav-item${dragging ? " dragging" : ""}${dropTarget ? " drop-target" : ""}`}
       style={{
         display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left",
-        background: active ? "#fff" : "transparent",
-        border: active ? `1px solid ${line}` : "1px solid transparent",
+        background: active ? "#C5D6C2" : "transparent",
+        border: "none",
         borderRadius: 7, padding: "8px 8px", fontSize: 13, fontWeight: active ? 600 : 400,
-        color: ink, marginBottom: 2,
+        color: active ? forest : ink, marginBottom: 2,
       }}
     >
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      {draggable && <span className="drag-handle" aria-hidden="true">⋮⋮</span>}
     </button>
   );
 }
