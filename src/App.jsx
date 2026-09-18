@@ -22,10 +22,10 @@ const isDefaultCategory = (category) =>
   category?.categoryType === "default" || DEFAULT_CATEGORY_NAMES.has(category?.name);
 
 const CATEGORY_FIELD_CONFIG = {
-  venue: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  venue: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, itemized: true, fromGuests: false, defaultQty: 1 },
   photo: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
   attire: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
-  beauty: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  beauty: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, itemized: true, fromGuests: false, defaultQty: 1 },
   decor: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   flowers: { quantityLabel: "Arrangements", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   music: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
@@ -35,7 +35,7 @@ const CATEGORY_FIELD_CONFIG = {
   favors: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
   misc: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
 };
-const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 };
+const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, itemized: false, fromGuests: false, defaultQty: 1 };
 function categoryKeyFromName(name) {
   return DEFAULT_CATEGORIES.find((c) => c.name === name)?.id || null;
 }
@@ -75,6 +75,31 @@ const remainingColor = "#E7DECA";
 const sans = "'Work Sans', sans-serif";
 const serif = "'Fraunces', serif";
 
+function createLineItem(overrides = {}) {
+  return {
+    id: `line-${Math.random().toString(36).slice(2, 9)}`,
+    title: "",
+    quantity: "1",
+    unitCost: "",
+    taxRate: "0",
+    serviceFeeRate: "0",
+    ...overrides,
+  };
+}
+
+function lineItemTotals(lineItems = []) {
+  return lineItems.reduce((totals, lineItem) => {
+    const subtotal = (Math.max(0, Number(lineItem.quantity) || 0)) * (Math.max(0, Number(lineItem.unitCost) || 0));
+    const taxAmount = subtotal * (Math.max(0, Number(lineItem.taxRate) || 0) / 100);
+    const serviceFeeAmount = subtotal * (Math.max(0, Number(lineItem.serviceFeeRate) || 0) / 100);
+    totals.subtotal += subtotal;
+    totals.taxAmount += taxAmount;
+    totals.serviceFeeAmount += serviceFeeAmount;
+    totals.total += subtotal + taxAmount + serviceFeeAmount;
+    return totals;
+  }, { subtotal: 0, taxAmount: 0, serviceFeeAmount: 0, total: 0 });
+}
+
 function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
   const cfg = fieldConfigFor(catId, categories);
   return {
@@ -92,20 +117,23 @@ function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
     whoPaid: "",
     paymentMethod: "",
     balanceDueDate: "",
+    lineItems: cfg.itemized ? [createLineItem()] : [],
     notes: "",
   };
 }
 
 function itemTotals(it) {
-  const subtotal = (Number(it.quantity) || 0) * (Number(it.unitCost) || 0);
-  const taxAmount = subtotal * (Math.max(0, Number(it.taxRate) || 0) / 100);
-  const total = subtotal + taxAmount;
+  const itemizedTotals = it.lineItems?.length ? lineItemTotals(it.lineItems) : null;
+  const subtotal = itemizedTotals?.subtotal ?? ((Number(it.quantity) || 0) * (Number(it.unitCost) || 0));
+  const taxAmount = itemizedTotals?.taxAmount ?? (subtotal * (Math.max(0, Number(it.taxRate) || 0) / 100));
+  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? 0;
+  const total = itemizedTotals?.total ?? (subtotal + taxAmount);
   const paid = Number(it.amountPaid) || 0;
   const planned = Math.max(0, total - paid);
   const depositCovered = it.requiresDeposit
     ? !!it.depositPaid || (paid >= (Number(it.depositAmount) || 0) && (Number(it.depositAmount) || 0) > 0)
     : null;
-  return { subtotal, taxAmount, total, paid, planned, depositCovered };
+  return { subtotal, taxAmount, serviceFeeAmount, total, paid, planned, depositCovered };
 }
 
 function dbCategoryToApp(row) {
@@ -136,22 +164,38 @@ function dbItemToApp(row) {
     whoPaid: row.who_paid || "",
     paymentMethod: row.payment_method || "",
     balanceDueDate: row.balance_due_date || "",
+    lineItems: Array.isArray(row.line_items) ? row.line_items.map((lineItem) => createLineItem({
+      ...lineItem,
+      quantity: String(lineItem.quantity ?? 1),
+      unitCost: String(lineItem.unitCost ?? ""),
+      taxRate: String(lineItem.taxRate ?? 0),
+      serviceFeeRate: String(lineItem.serviceFeeRate ?? 0),
+    })) : [],
     notes: row.notes || "",
   };
 }
 
 function appItemToDb(item, weddingId) {
-  const subtotal = (Number(item.quantity) || 0) * (Number(item.unitCost) || 0);
+  const normalizedLineItems = (item.lineItems || []).map((lineItem) => ({
+    id: lineItem.id,
+    title: lineItem.title,
+    quantity: Math.max(0, Number(lineItem.quantity) || 0),
+    unitCost: Math.max(0, Number(lineItem.unitCost) || 0),
+    taxRate: Math.max(0, Number(lineItem.taxRate) || 0),
+    serviceFeeRate: Math.max(0, Number(lineItem.serviceFeeRate) || 0),
+  }));
+  const itemizedTotals = normalizedLineItems.length ? lineItemTotals(normalizedLineItems) : null;
+  const subtotal = itemizedTotals?.subtotal ?? ((Number(item.quantity) || 0) * (Number(item.unitCost) || 0));
   const taxRate = Math.max(0, Number(item.taxRate) || 0);
   return {
     wedding_id: weddingId,
     category_id: item.categoryId,
     description: item.description,
     vendor: item.vendor || null,
-    quantity: Number(item.quantity) || 0,
-    unit_cost: Number(item.unitCost) || 0,
-    tax: subtotal * (taxRate / 100),
-    tax_rate: taxRate,
+    quantity: itemizedTotals ? 1 : (Number(item.quantity) || 0),
+    unit_cost: itemizedTotals ? itemizedTotals.subtotal + itemizedTotals.serviceFeeAmount : (Number(item.unitCost) || 0),
+    tax: itemizedTotals ? itemizedTotals.taxAmount : subtotal * (taxRate / 100),
+    tax_rate: itemizedTotals ? 0 : taxRate,
     requires_deposit: !!item.requiresDeposit,
     deposit_amount: Number(item.depositAmount) || 0,
     deposit_due_date: item.depositDueDate || null,
@@ -160,6 +204,7 @@ function appItemToDb(item, weddingId) {
     who_paid: item.whoPaid || null,
     payment_method: item.paymentMethod || null,
     balance_due_date: item.balanceDueDate || null,
+    line_items: normalizedLineItems,
     notes: item.notes || null,
   };
 }
@@ -683,6 +728,12 @@ export default function WeddingBudgetTracker() {
   }
 
   function openEditItem(it) {
+    const cfg = fieldConfigFor(it.categoryId, categories);
+    const lineItems = it.lineItems?.length
+      ? it.lineItems.map((lineItem) => createLineItem(lineItem))
+      : cfg.itemized
+        ? [createLineItem({ title: it.description, quantity: String(it.quantity || 1), unitCost: String(it.unitCost || ""), taxRate: String(it.taxRate || 0) })]
+        : [];
     setForm({
       categoryId: it.categoryId,
       description: it.description,
@@ -698,6 +749,7 @@ export default function WeddingBudgetTracker() {
       whoPaid: it.whoPaid || "",
       paymentMethod: it.paymentMethod || "",
       balanceDueDate: it.balanceDueDate || "",
+      lineItems,
       notes: it.notes || "",
     });
     setEditingId(it.id);
@@ -711,6 +763,7 @@ export default function WeddingBudgetTracker() {
       ...f,
       categoryId: catId,
       quantity: cfg.fromGuests && Number(guestCount) > 0 ? String(guestCount) : String(cfg.defaultQty),
+      lineItems: cfg.itemized && !f.lineItems?.length ? [createLineItem()] : f.lineItems,
     }));
   }
 
@@ -726,11 +779,20 @@ export default function WeddingBudgetTracker() {
       return;
     }
 
+    const cfg = fieldConfigFor(form.categoryId, categories);
+    const activeLineItems = cfg.itemized
+      ? (form.lineItems || []).filter((lineItem) => lineItem.title.trim() || Number(lineItem.unitCost) > 0)
+      : [];
+    if (cfg.itemized && (activeLineItems.length === 0 || activeLineItems.some((lineItem) => !lineItem.title.trim()))) {
+      setItemError("Add a title for each itemized cost.");
+      return;
+    }
+
     const payload = {
       categoryId: form.categoryId,
       description: form.description.trim(),
       vendor: form.vendor.trim(),
-      quantity: fieldConfigFor(form.categoryId, categories).showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1,
+      quantity: cfg.itemized ? 1 : cfg.showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1,
       unitCost: Math.max(0, Number(form.unitCost) || 0),
       taxRate: Math.max(0, Number(form.taxRate) || 0),
       requiresDeposit: form.requiresDeposit,
@@ -741,6 +803,7 @@ export default function WeddingBudgetTracker() {
       whoPaid: form.whoPaid.trim(),
       paymentMethod: form.paymentMethod,
       balanceDueDate: form.balanceDueDate,
+      lineItems: activeLineItems,
       notes: form.notes.trim(),
     };
 
@@ -1118,6 +1181,7 @@ function GoogleFontImport() {
       .expense-form-heading { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid ${line}; }
       .expense-form-intro { margin-top: 5px; color: #7D7467; font-size: 12px; }
       .dialog-close { width: 32px; height: 32px; flex: 0 0 auto; border: 0; border-radius: 50%; background: ${paper}; color: ${ink}; font-size: 22px; line-height: 1; }
+      .category-context-field { max-width: 330px; padding: 18px 0 2px; }
       .expense-form-section { display: grid; gap: 12px; padding: 20px 0; border-bottom: 1px solid ${line}; }
       .expense-section-label { display: flex; align-items: center; gap: 8px; color: ${forest}; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
       .expense-section-label span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: ${forestSoft}; font: 500 10px/1 'DM Mono', monospace; }
@@ -1143,6 +1207,15 @@ function GoogleFontImport() {
       .cost-preview strong { color: ${ink}; font-family: ${serif}; font-size: 16px; }
       .cost-preview .cost-total { background: ${forestSoft}; }
       .cost-preview .cost-total strong { color: ${forest}; }
+      .line-items-list { display: grid; gap: 12px; }
+      .line-item-card { padding: 14px; border: 1px solid ${line}; border-radius: 3px; background: #FFFEFA; box-shadow: 3px 3px 0 rgba(192,132,79,.08); }
+      .line-item-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: ${forest}; font: 500 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
+      .line-item-heading button { border: 0; background: transparent; color: ${rose}; padding: 3px 0; font-size: 10px; font-weight: 600; }
+      .line-item-grid { display: grid; grid-template-columns: minmax(170px,1.5fr) .65fr .9fr .65fr .75fr; gap: 9px; align-items: end; }
+      .line-item-total { display: flex; justify-content: flex-end; align-items: baseline; gap: 10px; margin-top: 10px; color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+      .line-item-total strong { color: ${forest}; font: 500 17px/1 ${serif}; }
+      .add-line-item { justify-self: start; padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
+      .cost-preview.itemized-preview { grid-template-columns: repeat(4,1fr); }
       .payment-secondary { align-items: end; }
       .remaining-preview { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 8px 11px; border-radius: 3px; background: ${forestSoft}; }
       .remaining-preview strong { color: ${forest}; font-family: ${serif}; }
@@ -1191,6 +1264,9 @@ function GoogleFontImport() {
         .expense-form-shell { padding: 22px 17px; }
         .expense-grid-main, .expense-grid-two, .expense-grid-three { grid-template-columns: 1fr; }
         .cost-preview { grid-template-columns: 1fr; }
+        .cost-preview.itemized-preview { grid-template-columns: repeat(2,1fr); }
+        .line-item-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        .line-item-grid > div:first-child { grid-column: 1 / -1; }
         .settings-card { padding: 18px 14px; }
         .settings-card-copy { grid-template-columns: 1fr; }
         .category-settings-heading { display: grid; }
@@ -1510,10 +1586,15 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
                           Deposit {CAD(it.depositAmount)}{it.depositDueDate ? ` due ${it.depositDueDate}` : ""} {t.depositCovered ? "· paid" : "· pending"}
                         </div>
                       )}
+                      {it.lineItems?.length > 0 && (
+                        <div style={{ fontSize: 11, marginTop: 3, color: forest }}>
+                          {it.lineItems.length} itemized {it.lineItems.length === 1 ? "cost" : "costs"}
+                        </div>
+                      )}
                       {it.notes && <div style={{ fontSize: 12, color: "#8a8a80" }}>{it.notes}</div>}
                     </td>
                     <td style={tdStyle}>{it.vendor || "—"}</td>
-                    {cfg.showQuantity && <td style={{ ...tdStyle, textAlign: "right" }}>{it.quantity}</td>}
+                    {cfg.showQuantity && <td style={{ ...tdStyle, textAlign: "right" }}>{cfg.itemized ? (it.lineItems?.length || 1) : it.quantity}</td>}
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 500 }}>{CAD(t.total)}</td>
                     <td style={{ ...tdStyle, textAlign: "right", color: forest }}>
                       <div>{CAD(t.paid)}</div>
@@ -1542,9 +1623,11 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
 function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel }) {
   const cfg = fieldConfigFor(form.categoryId, categories);
   const quantity = cfg.showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1;
-  const subtotal = quantity * (Math.max(0, Number(form.unitCost) || 0));
-  const taxAmount = subtotal * (Math.max(0, Number(form.taxRate) || 0) / 100);
-  const total = subtotal + taxAmount;
+  const itemizedTotals = cfg.itemized ? lineItemTotals(form.lineItems) : null;
+  const subtotal = itemizedTotals?.subtotal ?? (quantity * (Math.max(0, Number(form.unitCost) || 0)));
+  const taxAmount = itemizedTotals?.taxAmount ?? (subtotal * (Math.max(0, Number(form.taxRate) || 0) / 100));
+  const serviceFeeAmount = itemizedTotals?.serviceFeeAmount ?? 0;
+  const total = itemizedTotals?.total ?? (subtotal + taxAmount);
   const remaining = Math.max(0, total - (Math.max(0, Number(form.amountPaid) || 0)));
 
   function updateDepositAmount(value) {
@@ -1566,6 +1649,22 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
     }));
   }
 
+  function updateLineItem(id, field, value) {
+    setForm((current) => ({
+      ...current,
+      lineItems: current.lineItems.map((lineItem) => lineItem.id === id ? { ...lineItem, [field]: value } : lineItem),
+    }));
+  }
+
+  function removeLineItem(id) {
+    setForm((current) => ({
+      ...current,
+      lineItems: current.lineItems.length > 1
+        ? current.lineItems.filter((lineItem) => lineItem.id !== id)
+        : [createLineItem()],
+    }));
+  }
+
   return (
     <div className="expense-form-shell">
       <div className="expense-form-heading">
@@ -1580,14 +1679,17 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
       </div>
 
       <form onSubmit={onSubmit}>
+        <div className="category-context-field">
+          <Field label="Category">
+            <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        </div>
+
         <section className="expense-form-section">
-          <div className="expense-section-label"><span>1</span> Expense</div>
-          <div className="expense-grid expense-grid-main">
-            <Field label="Category">
-              <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
-                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            </Field>
+          <div className="expense-section-label"><span>1</span> Expense details</div>
+          <div className="expense-grid">
             <Field label="Item or service">
               <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="e.g. Dinner package" style={inputStyle} />
               {itemError && <div className="field-error">{itemError}</div>}
@@ -1620,25 +1722,70 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
         </section>
 
         <section className="expense-form-section">
-          <div className="expense-section-label"><span>2</span> Cost</div>
-          <div className={`expense-grid ${cfg.showQuantity ? "expense-grid-three" : "expense-grid-two"}`}>
-            {cfg.showQuantity && (
-              <Field label={cfg.quantityLabel}>
-                <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
-              </Field>
-            )}
-            <Field label={cfg.costLabel}>
-              <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.unitCost} onChange={(e) => setForm((f) => ({ ...f, unitCost: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
-            </Field>
-            <Field label="Tax">
-              <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={form.taxRate} onChange={(e) => setForm((f) => ({ ...f, taxRate: e.target.value }))} placeholder="0" style={inputStyle} /><span>%</span></div>
-            </Field>
-          </div>
-          <div className="cost-preview" aria-live="polite">
-            <div><span>Subtotal</span><strong>{CAD(subtotal)}</strong></div>
-            <div><span>Tax ({Number(form.taxRate) || 0}%)</span><strong>{CAD(taxAmount)}</strong></div>
-            <div className="cost-total"><span>Total</span><strong>{CAD(total)}</strong></div>
-          </div>
+          <div className="expense-section-label"><span>2</span> {cfg.itemized ? "Itemized costs" : "Cost"}</div>
+          {cfg.itemized ? (
+            <>
+              <div className="line-items-list">
+                {form.lineItems.map((lineItem, index) => {
+                  const lineTotals = lineItemTotals([lineItem]);
+                  return (
+                    <div className="line-item-card" key={lineItem.id}>
+                      <div className="line-item-heading">
+                        <span>Item {index + 1}</span>
+                        <button type="button" onClick={() => removeLineItem(lineItem.id)} aria-label={`Remove item ${index + 1}`}>Remove</button>
+                      </div>
+                      <div className="line-item-grid">
+                        <Field label="Title">
+                          <input value={lineItem.title} onChange={(e) => updateLineItem(lineItem.id, "title", e.target.value)} placeholder="e.g. Three-course dinner" style={inputStyle} />
+                        </Field>
+                        <Field label="Quantity">
+                          <input type="number" min="0" step="1" value={lineItem.quantity} onChange={(e) => updateLineItem(lineItem.id, "quantity", e.target.value)} style={inputStyle} />
+                        </Field>
+                        <Field label="Unit cost">
+                          <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={lineItem.unitCost} onChange={(e) => updateLineItem(lineItem.id, "unitCost", e.target.value)} placeholder="0.00" style={inputStyle} /></div>
+                        </Field>
+                        <Field label="Tax">
+                          <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={lineItem.taxRate} onChange={(e) => updateLineItem(lineItem.id, "taxRate", e.target.value)} placeholder="0" style={inputStyle} /><span>%</span></div>
+                        </Field>
+                        <Field label="Service fee">
+                          <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={lineItem.serviceFeeRate} onChange={(e) => updateLineItem(lineItem.id, "serviceFeeRate", e.target.value)} placeholder="0" style={inputStyle} /><span>%</span></div>
+                        </Field>
+                      </div>
+                      <div className="line-item-total"><span>Item total</span><strong>{CAD(lineTotals.total)}</strong></div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button type="button" className="add-line-item" onClick={() => setForm((current) => ({ ...current, lineItems: [...current.lineItems, createLineItem()] }))}>+ Add another item</button>
+              <div className="cost-preview itemized-preview" aria-live="polite">
+                <div><span>Subtotal</span><strong>{CAD(subtotal)}</strong></div>
+                <div><span>Tax</span><strong>{CAD(taxAmount)}</strong></div>
+                <div><span>Service fees</span><strong>{CAD(serviceFeeAmount)}</strong></div>
+                <div className="cost-total"><span>Total</span><strong>{CAD(total)}</strong></div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={`expense-grid ${cfg.showQuantity ? "expense-grid-three" : "expense-grid-two"}`}>
+                {cfg.showQuantity && (
+                  <Field label={cfg.quantityLabel}>
+                    <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
+                  </Field>
+                )}
+                <Field label={cfg.costLabel}>
+                  <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.unitCost} onChange={(e) => setForm((f) => ({ ...f, unitCost: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
+                </Field>
+                <Field label="Tax">
+                  <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={form.taxRate} onChange={(e) => setForm((f) => ({ ...f, taxRate: e.target.value }))} placeholder="0" style={inputStyle} /><span>%</span></div>
+                </Field>
+              </div>
+              <div className="cost-preview" aria-live="polite">
+                <div><span>Subtotal</span><strong>{CAD(subtotal)}</strong></div>
+                <div><span>Tax ({Number(form.taxRate) || 0}%)</span><strong>{CAD(taxAmount)}</strong></div>
+                <div className="cost-total"><span>Total</span><strong>{CAD(total)}</strong></div>
+              </div>
+            </>
+          )}
         </section>
 
         <section className="expense-form-section">
