@@ -277,8 +277,8 @@ function appItemToDb(item, weddingId) {
   };
 }
 
-function AuthScreen({ onSignedIn }) {
-  const [mode, setMode] = useState("signin");
+function AuthScreen({ onSignedIn, passwordRecovery = false, onPasswordRecovered }) {
+  const [mode, setMode] = useState(passwordRecovery ? "recovery" : "signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -320,11 +320,14 @@ function AuthScreen({ onSignedIn }) {
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      setMessage("Password updated. You can continue to your budget.");
+      const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
+      if (signOutError) throw signOutError;
       window.history.replaceState({}, document.title, window.location.pathname);
       setMode("signin");
       setPassword("");
       setConfirmPassword("");
+      setMessage("Password updated. Sign in with your new password.");
+      onPasswordRecovered?.();
     } catch (err) {
       setMessage(err?.message || "Couldn't update your password.");
     } finally {
@@ -369,6 +372,13 @@ function AuthScreen({ onSignedIn }) {
     });
     return () => listener.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (passwordRecovery) {
+      setMode("recovery");
+      setMessage("Choose a new password for your account.");
+    }
+  }, [passwordRecovery]);
 
   if (!supabase) {
     return (
@@ -415,7 +425,7 @@ function AuthScreen({ onSignedIn }) {
               <Field label="Password">
                 <input type="password" required minLength="6" autoComplete={mode === "signin" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} style={{ ...inputStyle, height: 42 }} />
               </Field>
-              {message && <div style={{ fontSize: 12, color: message.startsWith("Account created") || message.startsWith("Password reset email sent") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
+              {message && <div style={{ fontSize: 12, color: message.startsWith("Account created") || message.startsWith("Password reset email sent") || message.startsWith("Password updated") ? forest : rose, lineHeight: 1.5 }}>{message}</div>}
               <button type="submit" disabled={busy} style={{ ...primaryBtnStyle, height: 42, opacity: busy ? 0.65 : 1 }}>
                 {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
               </button>
@@ -440,6 +450,12 @@ function AuthScreen({ onSignedIn }) {
 export default function WeddingBudgetTracker() {
   const [session, setSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const queryType = new URLSearchParams(window.location.search).get("type");
+    const hashType = new URLSearchParams(window.location.hash.replace(/^#/, "")).get("type");
+    return queryType === "recovery" || hashType === "recovery";
+  });
   const [weddingId, setWeddingId] = useState(null);
   const [setupComplete, setSetupComplete] = useState(false);
   const [overallBudget, setOverallBudget] = useState(0);
@@ -462,6 +478,14 @@ export default function WeddingBudgetTracker() {
   const [form, setForm] = useState(emptyItemForm(DEFAULT_CATEGORIES[0].id));
   const [editingId, setEditingId] = useState(null);
   const [itemError, setItemError] = useState("");
+  const [navOpen, setNavOpen] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("wedding-budget-nav-open") !== "false";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem("wedding-budget-nav-open", String(navOpen));
+  }, [navOpen]);
 
   useEffect(() => {
     if (!supabase) {
@@ -476,7 +500,8 @@ export default function WeddingBudgetTracker() {
       setAuthChecked(true);
     });
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
       setSession(nextSession);
       setAuthChecked(true);
       if (!nextSession) {
@@ -497,7 +522,7 @@ export default function WeddingBudgetTracker() {
   }, []);
 
   useEffect(() => {
-    if (!session?.user?.id || !supabase) return;
+    if (passwordRecovery || !session?.user?.id || !supabase) return;
     let cancelled = false;
 
     (async () => {
@@ -563,7 +588,7 @@ export default function WeddingBudgetTracker() {
     })();
 
     return () => { cancelled = true; };
-  }, [session?.user?.id]);
+  }, [session?.user?.id, passwordRecovery]);
 
   // Budget and guest-count changes are saved after a short pause.
   useEffect(() => {
@@ -1009,8 +1034,14 @@ export default function WeddingBudgetTracker() {
     );
   }
 
-  if (!session) {
-    return <AuthScreen onSignedIn={setSession} />;
+  if (!session || passwordRecovery) {
+    return (
+      <AuthScreen
+        onSignedIn={setSession}
+        passwordRecovery={passwordRecovery}
+        onPasswordRecovered={() => setPasswordRecovery(false)}
+      />
+    );
   }
 
   if (!loaded) {
@@ -1070,7 +1101,14 @@ export default function WeddingBudgetTracker() {
     <div className="app-shell" style={{ fontFamily: sans, background: paper, color: ink, minHeight: "100%", display: "flex" }}>
       <GoogleFontImport />
 
-      <nav className="app-nav" style={{ width: 244, flexShrink: 0, borderRight: `1px solid ${line}`, padding: "24px 14px", background: "#FCFBF7" }}>
+      {!navOpen && (
+        <button type="button" className="nav-show-button" onClick={() => setNavOpen(true)} aria-label="Show navigation">
+          <span aria-hidden="true">›</span><strong>Menu</strong>
+        </button>
+      )}
+
+      {navOpen && <nav className="app-nav" style={{ width: 244, flexShrink: 0, borderRight: `1px solid ${line}`, padding: "24px 14px", background: "#FCFBF7" }}>
+        <button type="button" className="nav-hide-button" onClick={() => setNavOpen(false)} aria-label="Hide navigation" title="Hide navigation">‹</button>
         <div style={{ padding: "0 8px", marginBottom: 18 }}>
           <div className="brand-mark">MADE WITH LOVE + A SPREADSHEET</div>
           <div style={{ fontFamily: serif, fontSize: 25, fontWeight: 500, lineHeight: 1.05 }}>Our wedding<br/><em>scrapbook</em></div>
@@ -1139,7 +1177,7 @@ export default function WeddingBudgetTracker() {
             Sign out
           </button>
         </div>
-      </nav>
+      </nav>}
 
       <main className="app-main" style={{ flex: 1, minWidth: 0, padding: "42px 44px 70px", overflowX: "hidden" }}>
         {addOpen && (
@@ -1204,6 +1242,7 @@ export default function WeddingBudgetTracker() {
             totals={categoryTotals(activeCategory.id)}
             updateCategoryBudget={updateCategoryBudget}
             onBack={() => setPage("summary")}
+            onAddItem={() => openAddPanel(activeCategory.id)}
             onEditItem={openEditItem}
             onDeleteItem={deleteItem}
             onRemoveCategory={removeCategory}
@@ -1231,9 +1270,13 @@ function GoogleFontImport() {
       .auth-card { position: relative; width: 100%; background: #fffdf7; border: 1px solid ${line}; border-radius: 3px; box-shadow: 7px 9px 0 rgba(72,99,75,.12), 0 24px 70px rgba(55,50,41,.10); transform: rotate(-.45deg); }
       .auth-card:before { content: ''; position: absolute; width: 112px; height: 25px; top: -13px; left: calc(50% - 56px); background: rgba(226,190,130,.70); transform: rotate(1.5deg); box-shadow: inset 0 0 12px rgba(255,255,255,.3); }
       .auth-actions { display: flex; justify-content: space-between; gap: 18px; padding-top: 14px; }
-      .app-nav { position: sticky; top: 0; height: 100vh; overflow-y: auto; box-shadow: 8px 0 0 rgba(192,132,79,.08), 12px 0 30px rgba(55,50,41,.05); }
+      .app-nav { position: sticky; top: 0; height: 100vh; overflow-y: auto; box-shadow: 8px 0 0 rgba(192,132,79,.08), 12px 0 30px rgba(55,50,41,.05); animation: nav-in .2s ease-out; }
+      .nav-hide-button { position: absolute; z-index: 2; top: 14px; right: 10px; display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 1px solid ${line}; border-radius: 50%; background: #FFFDF7; color: ${forest}; font: 500 21px/1 ${serif}; }
+      .nav-show-button { position: fixed; z-index: 20; top: 22px; left: 0; display: flex; align-items: center; gap: 5px; min-height: 38px; padding: 7px 10px 7px 8px; border: 1px solid ${line}; border-left: 0; border-radius: 0 4px 4px 0; background: #FFFDF7; color: ${forest}; box-shadow: 4px 5px 0 rgba(192,132,79,.16); }
+      .nav-show-button span { font: 500 22px/1 ${serif}; }
+      .nav-show-button strong { font: 500 9px/1 'DM Mono', monospace; letter-spacing: .08em; text-transform: uppercase; }
       .brand-mark, .nav-section-label { font-family: 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .12em; color: ${brass}; font-size: 9px; font-weight: 500; }
-      .brand-mark { margin-bottom: 8px; }
+      .brand-mark { margin-bottom: 8px; padding-right: 28px; }
       .nav-section-label { color: #8A8376; margin: 22px 8px 8px; }
       .category-nav { display: grid; gap: 1px; }
       .nav-item { position: relative; outline: none; }
@@ -1259,19 +1302,26 @@ function GoogleFontImport() {
       .scrap-card:nth-child(2n+1) { transform: rotate(-.25deg); }
       tbody tr:hover { background: #FFFCF2; }
       thead { background: rgba(246,229,200,.28); }
-      .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 28px; background: rgba(55,50,41,.55); backdrop-filter: blur(4px); animation: fade-in .18s ease-out; }
-      .expense-dialog { width: min(760px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; background: #fffdf7; border: 1px solid ${line}; border-radius: 4px; box-shadow: 10px 12px 0 rgba(72,99,75,.18), 0 32px 80px rgba(35,31,25,.3); animation: dialog-in .22s ease-out; }
-      .expense-form-shell { background: #fffdf7; padding: 28px; }
-      .expense-form-heading { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid ${line}; }
+      .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 28px; background: rgba(45,42,35,.58); backdrop-filter: blur(5px); animation: fade-in .18s ease-out; }
+      .expense-dialog { width: min(840px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; background: #F4EFE4; border: 1px solid rgba(216,206,186,.8); border-radius: 12px; box-shadow: 0 28px 80px rgba(35,31,25,.30); animation: dialog-in .22s ease-out; scrollbar-color: #C8BFAE transparent; }
+      .expense-form-shell { background: #F4EFE4; }
+      .expense-form-heading { position: sticky; z-index: 5; top: 0; display: flex; justify-content: space-between; gap: 20px; padding: 24px 28px 20px; border-bottom: 1px solid rgba(216,206,186,.75); background: rgba(255,253,247,.97); backdrop-filter: blur(8px); }
+      .expense-form-heading .page-kicker { margin-bottom: 6px; }
       .expense-form-intro { margin-top: 5px; color: #7D7467; font-size: 12px; }
-      .dialog-close { width: 32px; height: 32px; flex: 0 0 auto; border: 0; border-radius: 50%; background: ${paper}; color: ${ink}; font-size: 22px; line-height: 1; }
-      .category-context-field { max-width: 330px; padding: 18px 0 2px; }
-      .expense-form-section { display: grid; gap: 12px; padding: 20px 0; border-bottom: 1px solid ${line}; }
+      .dialog-close { width: 32px; height: 32px; flex: 0 0 auto; border: 1px solid transparent; border-radius: 50%; background: ${paper}; color: ${ink}; font-size: 22px; line-height: 1; }
+      .dialog-close:hover { border-color: ${line}; background: #fff; }
+      .expense-form { display: grid; gap: 14px; padding: 20px 28px 24px; }
+      .category-context-field { max-width: none; padding: 0 0 2px; }
+      .category-context-field > div { display: grid; grid-template-columns: max-content minmax(0,330px); align-items: center; gap: 16px; padding: 4px 0; }
+      .category-context-field > div > div:first-child { margin: 0 !important; color: #6F675A !important; font-weight: 600; }
+      .expense-form-section { display: grid; gap: 16px; padding: 20px; border: 1px solid rgba(216,206,186,.82); border-radius: 9px; background: #FFFDF8; }
+      .expense-details-section { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .expense-details-section > .expense-section-label { grid-column: 1 / -1; }
       .expense-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-      .expense-section-label { display: flex; align-items: center; gap: 8px; color: ${forest}; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
-      .expense-section-label span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: ${forestSoft}; font: 500 10px/1 'DM Mono', monospace; }
-      .cost-mode-toggle { padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 11px; font-weight: 600; }
-      .cost-mode-toggle:hover { background: ${forestSoft}; }
+      .expense-section-label { display: flex; align-items: center; gap: 10px; color: ${ink}; font-family: ${serif}; font-size: 17px; font-weight: 500; letter-spacing: -.01em; }
+      .expense-section-label span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: ${forest}; color: #fff; font: 500 10px/1 'DM Mono', monospace; }
+      .cost-mode-toggle { padding: 6px 0; border: 0; border-bottom: 1px solid rgba(72,99,75,.35); border-radius: 0; background: transparent; color: ${forest}; font-size: 11px; font-weight: 600; }
+      .cost-mode-toggle:hover { border-color: ${forest}; background: transparent; }
       .expense-grid { display: grid; gap: 12px; }
       .expense-grid-main { grid-template-columns: minmax(150px,.75fr) minmax(240px,1.5fr); }
       .expense-grid-two { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -1280,44 +1330,52 @@ function GoogleFontImport() {
       .paid-check-card input { margin-top: 2px; accent-color: ${forest}; }
       .paid-check-card span { display: grid; gap: 2px; }
       .paid-check-card small { color: #7D7467; font-size: 10px; line-height: 1.35; }
-      .paid-check-card { display: flex; align-items: center; gap: 9px; min-height: 55px; padding: 10px 12px; border: 1px solid ${line}; border-radius: 7px; background: #fff; cursor: pointer; }
+      .paid-check-card { display: flex; align-items: center; gap: 9px; min-height: 55px; padding: 10px 12px; border: 1px solid rgba(216,206,186,.8); border-radius: 7px; background: #fff; cursor: pointer; }
       .input-affix { position: relative; }
       .input-affix > span { position: absolute; z-index: 1; left: 11px; top: 8px; color: #7D7467; font-size: 12px; }
       .input-affix > input { padding-left: 25px !important; }
       .input-affix.suffix > span { left: auto; right: 11px; }
       .input-affix.suffix > input { padding-left: 10px !important; padding-right: 26px !important; }
-      .cost-preview { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; overflow: hidden; border: 1px solid ${line}; border-radius: 3px; background: ${line}; }
-      .cost-preview > div { display: grid; gap: 3px; padding: 11px 13px; background: #fff; }
+      .cost-preview { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; padding-top: 12px; border: 0; border-top: 1px solid ${line}; background: transparent; }
+      .cost-preview > div { display: grid; gap: 3px; padding: 4px 13px; border-right: 1px solid rgba(216,206,186,.7); background: transparent; }
+      .cost-preview > div:first-child { padding-left: 0; }
+      .cost-preview > div:last-child { border-right: 0; }
       .cost-preview span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
       .cost-preview strong { color: ${ink}; font-family: ${serif}; font-size: 16px; }
-      .cost-preview .cost-total { background: ${forestSoft}; }
+      .cost-preview .cost-total { padding: 7px 12px; border-radius: 6px; background: ${forestSoft}; }
       .cost-preview .cost-total strong { color: ${forest}; }
       .line-items-list { display: grid; gap: 12px; }
-      .line-item-card { padding: 14px; border: 1px solid ${line}; border-radius: 3px; background: #FFFEFA; box-shadow: 3px 3px 0 rgba(192,132,79,.08); }
+      .line-item-card { padding: 16px; border: 1px solid rgba(216,206,186,.72); border-radius: 8px; background: #F9F6ED; }
       .line-item-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: ${forest}; font: 500 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
       .line-item-heading button { border: 0; background: transparent; color: ${rose}; padding: 3px 0; font-size: 10px; font-weight: 600; }
-      .line-item-grid { display: grid; grid-template-columns: minmax(170px,1.5fr) .65fr .9fr .65fr .75fr; gap: 9px; align-items: end; }
+      .line-item-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; align-items: end; }
+      .line-item-grid > div:first-child { grid-column: 1 / -1; }
       .line-item-total { display: flex; justify-content: flex-end; align-items: baseline; gap: 10px; margin-top: 10px; color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
       .line-item-total strong { color: ${forest}; font: 500 17px/1 ${serif}; }
-      .add-line-item { justify-self: start; padding: 7px 10px; border: 1px dashed ${forest}; border-radius: 3px; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
+      .add-line-item { justify-self: start; padding: 6px 0; border: 0; border-bottom: 1px solid rgba(72,99,75,.35); border-radius: 0; background: transparent; color: ${forest}; font-size: 11px; font-weight: 600; }
       .cost-preview.itemized-preview { grid-template-columns: repeat(4,1fr); }
       .payment-schedule-list { display: grid; gap: 10px; }
-      .payment-entry-card { display: grid; gap: 11px; padding: 14px; border: 1px solid ${line}; border-radius: 3px; background: #FFFEFA; }
+      .payment-entry-card { display: grid; gap: 13px; padding: 16px; border: 1px solid rgba(216,206,186,.72); border-radius: 8px; background: #F9F6ED; }
       .payment-entry-heading { display: flex; justify-content: space-between; color: ${forest}; font: 500 10px/1 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .08em; }
       .payment-entry-heading button { border: 0; background: transparent; color: ${rose}; padding: 0; font-size: 10px; font-weight: 600; }
       .payment-paid-toggle { display: inline-flex; width: fit-content; align-items: center; gap: 7px; color: ${ink}; font-size: 12px; font-weight: 600; cursor: pointer; }
       .payment-paid-toggle input, .payment-paid-card input { accent-color: ${forest}; }
-      .paid-details { padding-top: 10px; border-top: 1px dashed ${line}; }
-      .payment-summary { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; overflow: hidden; border: 1px solid ${line}; border-radius: 3px; background: ${line}; }
-      .payment-summary > div:not(.unscheduled-note) { display: flex; justify-content: space-between; gap: 10px; padding: 10px 12px; background: ${forestSoft}; }
+      .paid-details { padding-top: 12px; border-top: 1px solid ${line}; }
+      .payment-summary { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; overflow: hidden; padding: 12px 14px; border: 0; border-radius: 7px; background: ${forestSoft}; }
+      .payment-summary > div:not(.unscheduled-note) { display: grid; gap: 4px; padding: 2px 12px; border-right: 1px solid rgba(72,99,75,.16); background: transparent; }
+      .payment-summary > div:first-child { padding-left: 0; }
+      .payment-summary > div:nth-child(3) { border-right: 0; }
       .payment-summary span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
       .payment-summary strong { color: ${forest}; font-family: ${serif}; }
-      .payment-summary .unscheduled-note { grid-column: 1 / -1; padding: 8px 12px; background: ${brassSoft}; color: #7D5C37; font-size: 11px; }
-      .notes-section { border-bottom: 0; }
+      .payment-summary .unscheduled-note { grid-column: 1 / -1; margin: 10px -14px -12px; padding: 9px 14px; background: ${brassSoft}; color: #7D5C37; font-size: 11px; }
+      .notes-section { padding: 16px 20px; }
       .field-error { margin-top: 4px; color: ${rose}; font-size: 11px; }
-      .expense-form-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; background: linear-gradient(transparent, #fffdf7 18%); }
+      .expense-form-actions { position: sticky; z-index: 4; bottom: 0; display: flex; justify-content: flex-end; gap: 9px; margin: 0 -28px -24px; padding: 16px 28px; border-top: 1px solid rgba(216,206,186,.8); background: rgba(255,253,247,.97); backdrop-filter: blur(8px); }
+      .expense-form-actions button[type="submit"] { order: 2; min-width: 128px; }
       .breadcrumb { display: inline-flex; gap: 8px; align-items: center; margin: 0 0 22px; padding: 0; border: 0; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
       .breadcrumb span { color: ${brass}; }
+      .category-page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 24px; }
+      .category-page-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; }
       .settings-tabs { display: flex; gap: 26px; border-bottom: 1px solid ${line}; margin-bottom: 22px; }
       .settings-tabs button { position: relative; border: 0; background: transparent; padding: 11px 1px 12px; color: #777064; font-size: 13px; font-weight: 600; }
       .settings-tabs button.active { color: ${forest}; }
@@ -1342,9 +1400,11 @@ function GoogleFontImport() {
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
       @keyframes fade-in { from { opacity: 0; } }
       @keyframes dialog-in { from { opacity: 0; transform: translateY(12px) rotate(-.3deg); } }
+      @keyframes nav-in { from { opacity: 0; transform: translateX(-18px); } }
       @media (max-width: 900px) {
         .app-shell { display: block !important; }
         .app-nav { position: relative; width: 100% !important; height: auto; max-height: none; border-right: 0 !important; border-bottom: 1px solid ${line}; }
+        .nav-show-button { top: 12px; }
         .category-nav { grid-template-columns: repeat(2,minmax(0,1fr)); max-height: 190px; overflow-y: auto; }
         .app-main { padding: 28px 18px 56px !important; }
         .app-main > div > div[style*="repeat(4, 1fr)"] { grid-template-columns: repeat(2,minmax(0,1fr)) !important; }
@@ -1355,14 +1415,24 @@ function GoogleFontImport() {
         .app-main > div > div[style*="repeat(4, 1fr)"] { grid-template-columns: 1fr !important; }
         .modal-backdrop { padding: 12px; place-items: end center; }
         .expense-dialog { max-height: calc(100vh - 24px); }
-        .expense-form-shell { padding: 22px 17px; }
+        .expense-form-heading { padding: 20px 18px 16px; }
+        .expense-form { padding: 14px 12px 18px; }
+        .category-context-field > div { grid-template-columns: 1fr; gap: 5px; }
+        .expense-form-section { padding: 17px 14px; }
+        .expense-details-section { grid-template-columns: 1fr; }
+        .expense-details-section > .expense-section-label { grid-column: auto; }
         .expense-grid-main, .expense-grid-two, .expense-grid-three, .simple-cost-grid { grid-template-columns: 1fr; }
-        .expense-section-heading { align-items: flex-start; }
+        .expense-section-heading { align-items: flex-start; flex-wrap: wrap; }
+        .category-page-header { display: grid; }
+        .category-page-actions { justify-content: flex-start; }
         .cost-preview { grid-template-columns: 1fr; }
         .cost-preview.itemized-preview { grid-template-columns: repeat(2,1fr); }
         .line-item-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
         .line-item-grid > div:first-child { grid-column: 1 / -1; }
         .payment-summary { grid-template-columns: 1fr; }
+        .payment-summary > div:not(.unscheduled-note) { display: flex; justify-content: space-between; padding: 8px 0; border-right: 0; border-bottom: 1px solid rgba(72,99,75,.14); }
+        .payment-summary > div:nth-child(3) { border-bottom: 0; }
+        .expense-form-actions { margin: 0 -12px -18px; padding: 14px 16px; }
         .settings-card { padding: 18px 14px; }
         .settings-card-copy { grid-template-columns: 1fr; }
         .category-settings-heading { display: grid; }
@@ -1619,17 +1689,20 @@ function SettingsPage({
   );
 }
 
-function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onEditItem, onDeleteItem, onRemoveCategory }) {
+function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onAddItem, onEditItem, onDeleteItem, onRemoveCategory }) {
   const budget = Number(category.budget) || 0;
   const remaining = budget - totals.paid;
   return (
     <div>
       <button type="button" className="breadcrumb" onClick={onBack}>Summary <span>›</span> {category.name}</button>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24, gap: 12 }}>
+      <div className="category-page-header">
         <div style={{ fontFamily: serif, fontSize: 28, fontWeight: 500 }}>{category.name}</div>
-        {!isDefaultCategory(category) && (
-          <button onClick={() => onRemoveCategory(category.id)} style={ghostBtnStyle}>Delete category</button>
-        )}
+        <div className="category-page-actions">
+          <button type="button" onClick={onAddItem} style={primaryBtnStyle}>+ Log expense</button>
+          {!isDefaultCategory(category) && (
+            <button type="button" onClick={() => onRemoveCategory(category.id)} style={ghostBtnStyle}>Delete category</button>
+          )}
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 30 }}>
@@ -1653,7 +1726,7 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
 
       {items.length === 0 ? (
         <div style={{ fontSize: 13, color: "#8a8a80", border: `1px solid ${line}`, borderRadius: 12, padding: "24px", background: "#fff" }}>
-          No expenses logged in this category yet. Use “Log wedding expense” in the sidebar to add the first one.
+          No expenses logged in this category yet. Use “Log expense” above to add the first one.
         </div>
       ) : (
         <div style={{ border: `1px solid ${line}`, borderRadius: 12, background: "#fff", overflow: "hidden", overflowX: "auto" }}>
@@ -1822,7 +1895,7 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
         <button type="button" className="dialog-close" onClick={onCancel} aria-label="Close expense dialog">×</button>
       </div>
 
-      <form onSubmit={onSubmit}>
+      <form className="expense-form" onSubmit={onSubmit}>
         <div className="category-context-field">
           <Field label="Category">
             <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
@@ -1831,7 +1904,7 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
           </Field>
         </div>
 
-        <section className="expense-form-section">
+        <section className="expense-form-section expense-details-section">
           <div className="expense-section-label"><span>1</span> Expense details</div>
           <div className="expense-grid">
             <Field label="Item or service">
