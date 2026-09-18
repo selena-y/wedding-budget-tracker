@@ -22,22 +22,20 @@ const isDefaultCategory = (category) =>
   category?.categoryType === "default" || DEFAULT_CATEGORY_NAMES.has(category?.name);
 
 const CATEGORY_FIELD_CONFIG = {
-  venue: { quantityLabel: "Guests or quantity", fromGuests: true, defaultQty: 1 },
-  photo: { quantityLabel: "Hours booked", fromGuests: false, defaultQty: 1 },
-  attire: { quantityLabel: "Items", fromGuests: false, defaultQty: 1 },
-  beauty: { quantityLabel: "People", fromGuests: false, defaultQty: 1 },
-  decor: { quantityLabel: "Items", fromGuests: false, defaultQty: 1 },
-  flowers: { quantityLabel: "Arrangements", fromGuests: false, defaultQty: 1 },
-  music: { quantityLabel: "Hours booked", fromGuests: false, defaultQty: 1 },
-  stationery: { quantityLabel: "Invitations", fromGuests: true, defaultQty: 1 },
-  rings: { quantityLabel: "Rings", fromGuests: false, defaultQty: 2 },
-  transport: { quantityLabel: "Vehicles", fromGuests: false, defaultQty: 1 },
-  planner: { quantityLabel: "Packages", fromGuests: false, defaultQty: 1 },
-  officiant: { quantityLabel: "Ceremonies", fromGuests: false, defaultQty: 1 },
-  favors: { quantityLabel: "Guests", fromGuests: true, defaultQty: 1 },
-  misc: { quantityLabel: "Quantity", fromGuests: false, defaultQty: 1 },
+  venue: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  photo: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  attire: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  beauty: { quantityLabel: "Quantity", costLabel: "Cost per item", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  decor: { quantityLabel: "Items", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  flowers: { quantityLabel: "Arrangements", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  music: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  stationery: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  transport: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  officiant: { quantityLabel: "Quantity", costLabel: "Cost", showQuantity: false, fromGuests: false, defaultQty: 1 },
+  favors: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
+  misc: { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 },
 };
-const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", fromGuests: false, defaultQty: 1 };
+const DEFAULT_FIELD_CONFIG = { quantityLabel: "Quantity", costLabel: "Unit cost", showQuantity: true, fromGuests: false, defaultQty: 1 };
 function categoryKeyFromName(name) {
   return DEFAULT_CATEGORIES.find((c) => c.name === name)?.id || null;
 }
@@ -57,6 +55,13 @@ const CAD = (n) =>
   new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
     Number.isFinite(n) ? n : 0
   );
+const PAYMENT_METHOD_LABELS = {
+  cash: "Cash",
+  credit: "Credit",
+  debit: "Debit",
+  etransfer: "e-Transfer",
+  other: "Other",
+};
 const ink = "#373229";
 const forest = "#48634B";
 const forestSoft = "#E4ECDD";
@@ -78,25 +83,29 @@ function emptyItemForm(catId, categories = DEFAULT_CATEGORIES) {
     vendor: "",
     quantity: String(cfg.defaultQty),
     unitCost: "",
-    tax: "0",
+    taxRate: "0",
     requiresDeposit: false,
     depositAmount: "",
     depositDueDate: "",
+    depositPaid: false,
     amountPaid: "",
+    whoPaid: "",
+    paymentMethod: "",
     balanceDueDate: "",
-    date: "",
     notes: "",
   };
 }
 
 function itemTotals(it) {
-  const total = (Number(it.quantity) || 0) * (Number(it.unitCost) || 0) + (Number(it.tax) || 0);
+  const subtotal = (Number(it.quantity) || 0) * (Number(it.unitCost) || 0);
+  const taxAmount = subtotal * (Math.max(0, Number(it.taxRate) || 0) / 100);
+  const total = subtotal + taxAmount;
   const paid = Number(it.amountPaid) || 0;
   const planned = Math.max(0, total - paid);
   const depositCovered = it.requiresDeposit
-    ? paid >= (Number(it.depositAmount) || 0) && (Number(it.depositAmount) || 0) > 0
+    ? !!it.depositPaid || (paid >= (Number(it.depositAmount) || 0) && (Number(it.depositAmount) || 0) > 0)
     : null;
-  return { total, paid, planned, depositCovered };
+  return { subtotal, taxAmount, total, paid, planned, depositCovered };
 }
 
 function dbCategoryToApp(row) {
@@ -118,18 +127,22 @@ function dbItemToApp(row) {
     vendor: row.vendor || "",
     quantity: Number(row.quantity) || 0,
     unitCost: Number(row.unit_cost) || 0,
-    tax: Number(row.tax) || 0,
+    taxRate: Number(row.tax_rate) || 0,
     requiresDeposit: !!row.requires_deposit,
     depositAmount: Number(row.deposit_amount) || 0,
     depositDueDate: row.deposit_due_date || "",
+    depositPaid: !!row.deposit_paid,
     amountPaid: Number(row.amount_paid) || 0,
+    whoPaid: row.who_paid || "",
+    paymentMethod: row.payment_method || "",
     balanceDueDate: row.balance_due_date || "",
-    date: row.item_date || "",
     notes: row.notes || "",
   };
 }
 
 function appItemToDb(item, weddingId) {
+  const subtotal = (Number(item.quantity) || 0) * (Number(item.unitCost) || 0);
+  const taxRate = Math.max(0, Number(item.taxRate) || 0);
   return {
     wedding_id: weddingId,
     category_id: item.categoryId,
@@ -137,13 +150,16 @@ function appItemToDb(item, weddingId) {
     vendor: item.vendor || null,
     quantity: Number(item.quantity) || 0,
     unit_cost: Number(item.unitCost) || 0,
-    tax: Number(item.tax) || 0,
+    tax: subtotal * (taxRate / 100),
+    tax_rate: taxRate,
     requires_deposit: !!item.requiresDeposit,
     deposit_amount: Number(item.depositAmount) || 0,
     deposit_due_date: item.depositDueDate || null,
+    deposit_paid: !!item.depositPaid,
     amount_paid: Number(item.amountPaid) || 0,
+    who_paid: item.whoPaid || null,
+    payment_method: item.paymentMethod || null,
     balance_due_date: item.balanceDueDate || null,
-    item_date: item.date || null,
     notes: item.notes || null,
   };
 }
@@ -673,13 +689,15 @@ export default function WeddingBudgetTracker() {
       vendor: it.vendor || "",
       quantity: String(it.quantity),
       unitCost: String(it.unitCost),
-      tax: String(it.tax),
+      taxRate: String(it.taxRate || 0),
       requiresDeposit: !!it.requiresDeposit,
       depositAmount: it.depositAmount ? String(it.depositAmount) : "",
       depositDueDate: it.depositDueDate || "",
+      depositPaid: !!it.depositPaid,
       amountPaid: String(it.amountPaid),
+      whoPaid: it.whoPaid || "",
+      paymentMethod: it.paymentMethod || "",
       balanceDueDate: it.balanceDueDate || "",
-      date: it.date || "",
       notes: it.notes || "",
     });
     setEditingId(it.id);
@@ -712,15 +730,17 @@ export default function WeddingBudgetTracker() {
       categoryId: form.categoryId,
       description: form.description.trim(),
       vendor: form.vendor.trim(),
-      quantity: Math.max(0, Number(form.quantity) || 0),
+      quantity: fieldConfigFor(form.categoryId, categories).showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1,
       unitCost: Math.max(0, Number(form.unitCost) || 0),
-      tax: Math.max(0, Number(form.tax) || 0),
+      taxRate: Math.max(0, Number(form.taxRate) || 0),
       requiresDeposit: form.requiresDeposit,
       depositAmount: form.requiresDeposit ? Math.max(0, Number(form.depositAmount) || 0) : 0,
       depositDueDate: form.requiresDeposit ? form.depositDueDate : "",
+      depositPaid: form.requiresDeposit && !!form.depositPaid,
       amountPaid: Math.max(0, Number(form.amountPaid) || 0),
+      whoPaid: form.whoPaid.trim(),
+      paymentMethod: form.paymentMethod,
       balanceDueDate: form.balanceDueDate,
-      date: form.date,
       notes: form.notes.trim(),
     };
 
@@ -1094,6 +1114,41 @@ function GoogleFontImport() {
       thead { background: rgba(246,229,200,.28); }
       .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 28px; background: rgba(55,50,41,.55); backdrop-filter: blur(4px); animation: fade-in .18s ease-out; }
       .expense-dialog { width: min(760px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; background: #fffdf7; border: 1px solid ${line}; border-radius: 4px; box-shadow: 10px 12px 0 rgba(72,99,75,.18), 0 32px 80px rgba(35,31,25,.3); animation: dialog-in .22s ease-out; }
+      .expense-form-shell { background: #fffdf7; padding: 28px; }
+      .expense-form-heading { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid ${line}; }
+      .expense-form-intro { margin-top: 5px; color: #7D7467; font-size: 12px; }
+      .dialog-close { width: 32px; height: 32px; flex: 0 0 auto; border: 0; border-radius: 50%; background: ${paper}; color: ${ink}; font-size: 22px; line-height: 1; }
+      .expense-form-section { display: grid; gap: 12px; padding: 20px 0; border-bottom: 1px solid ${line}; }
+      .expense-section-label { display: flex; align-items: center; gap: 8px; color: ${forest}; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+      .expense-section-label span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: ${forestSoft}; font: 500 10px/1 'DM Mono', monospace; }
+      .expense-grid { display: grid; gap: 12px; }
+      .expense-grid-main { grid-template-columns: minmax(150px,.75fr) minmax(240px,1.5fr); }
+      .expense-grid-two { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .expense-grid-three { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .deposit-section { padding: 16px; margin-top: 18px; border: 1px solid #E3CFAB; border-radius: 3px; background: rgba(246,229,200,.42); }
+      .check-row { display: flex; align-items: flex-start; gap: 10px; color: ${ink}; font-size: 13px; cursor: pointer; }
+      .check-row input, .paid-check-card input { margin-top: 2px; accent-color: ${forest}; }
+      .check-row span, .paid-check-card span { display: grid; gap: 2px; }
+      .check-row small, .paid-check-card small { color: #7D7467; font-size: 10px; line-height: 1.35; }
+      .deposit-fields { padding-top: 4px; }
+      .paid-check-card { display: flex; align-items: center; gap: 9px; min-height: 55px; padding: 10px 12px; border: 1px solid ${line}; border-radius: 7px; background: #fff; cursor: pointer; }
+      .input-affix { position: relative; }
+      .input-affix > span { position: absolute; z-index: 1; left: 11px; top: 8px; color: #7D7467; font-size: 12px; }
+      .input-affix > input { padding-left: 25px !important; }
+      .input-affix.suffix > span { left: auto; right: 11px; }
+      .input-affix.suffix > input { padding-left: 10px !important; padding-right: 26px !important; }
+      .cost-preview { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; overflow: hidden; border: 1px solid ${line}; border-radius: 3px; background: ${line}; }
+      .cost-preview > div { display: grid; gap: 3px; padding: 11px 13px; background: #fff; }
+      .cost-preview span, .remaining-preview span { color: #81796C; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+      .cost-preview strong { color: ${ink}; font-family: ${serif}; font-size: 16px; }
+      .cost-preview .cost-total { background: ${forestSoft}; }
+      .cost-preview .cost-total strong { color: ${forest}; }
+      .payment-secondary { align-items: end; }
+      .remaining-preview { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 8px 11px; border-radius: 3px; background: ${forestSoft}; }
+      .remaining-preview strong { color: ${forest}; font-family: ${serif}; }
+      .notes-section { border-bottom: 0; }
+      .field-error { margin-top: 4px; color: ${rose}; font-size: 11px; }
+      .expense-form-actions { position: sticky; bottom: 0; display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; background: linear-gradient(transparent, #fffdf7 18%); }
       .breadcrumb { display: inline-flex; gap: 8px; align-items: center; margin: 0 0 22px; padding: 0; border: 0; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
       .breadcrumb span { color: ${brass}; }
       .settings-tabs { display: flex; gap: 26px; border-bottom: 1px solid ${line}; margin-bottom: 22px; }
@@ -1133,7 +1188,9 @@ function GoogleFontImport() {
         .app-main > div > div[style*="repeat(4, 1fr)"] { grid-template-columns: 1fr !important; }
         .modal-backdrop { padding: 12px; place-items: end center; }
         .expense-dialog { max-height: calc(100vh - 24px); }
-        .expense-dialog form > div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+        .expense-form-shell { padding: 22px 17px; }
+        .expense-grid-main, .expense-grid-two, .expense-grid-three { grid-template-columns: 1fr; }
+        .cost-preview { grid-template-columns: 1fr; }
         .settings-card { padding: 18px 14px; }
         .settings-card-copy { grid-template-columns: 1fr; }
         .category-settings-heading { display: grid; }
@@ -1393,6 +1450,7 @@ function SettingsPage({
 function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onEditItem, onDeleteItem, onRemoveCategory }) {
   const budget = Number(category.budget) || 0;
   const remaining = budget - totals.paid;
+  const cfg = fieldConfigFor(category.id, [category]);
   return (
     <div>
       <button type="button" className="breadcrumb" onClick={onBack}>Summary <span>›</span> {category.name}</button>
@@ -1433,7 +1491,7 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
               <tr style={{ textAlign: "left", color: "#8a8a80" }}>
                 <th style={thStyle}>Item</th>
                 <th style={thStyle}>Vendor</th>
-                <th style={{ ...thStyle, textAlign: "right" }}>Qty</th>
+                {cfg.showQuantity && <th style={{ ...thStyle, textAlign: "right" }}>Qty</th>}
                 <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Paid</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Planned</th>
@@ -1455,9 +1513,16 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
                       {it.notes && <div style={{ fontSize: 12, color: "#8a8a80" }}>{it.notes}</div>}
                     </td>
                     <td style={tdStyle}>{it.vendor || "—"}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>{it.quantity}</td>
+                    {cfg.showQuantity && <td style={{ ...tdStyle, textAlign: "right" }}>{it.quantity}</td>}
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 500 }}>{CAD(t.total)}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", color: forest }}>{CAD(t.paid)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", color: forest }}>
+                      <div>{CAD(t.paid)}</div>
+                      {(it.whoPaid || it.paymentMethod) && (
+                        <div style={{ marginTop: 3, color: "#8a8a80", fontSize: 10 }}>
+                          {[it.whoPaid, PAYMENT_METHOD_LABELS[it.paymentMethod]].filter(Boolean).join(" · ")}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...tdStyle, textAlign: "right", color: brass }}>{CAD(t.planned)}</td>
                     <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
                       <button onClick={() => onEditItem(it)} style={iconTextBtnStyle}>Edit</button>
@@ -1476,90 +1541,141 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
 
 function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel }) {
   const cfg = fieldConfigFor(form.categoryId, categories);
-  return (
-    <div style={{ background: "#fffdf7", padding: 24 }}>
-      <div style={{ fontFamily: serif, fontSize: 18, fontWeight: 500, marginBottom: 16 }}>
-        {editingId ? "Edit wedding expense" : "Log wedding expense"}
-      </div>
-      <form onSubmit={onSubmit}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10, marginBottom: 10 }}>
-          <Field label="Category">
-            <select
-              value={form.categoryId}
-              onChange={(e) => onCategoryChange(e.target.value)}
-              style={inputStyle}
-            >
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </Field>
-          <Field label="What was it">
-            <input
-              value={form.description}
-              onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-              placeholder="e.g. Reception hall deposit"
-              style={inputStyle}
-            />
-            {itemError && <div style={{ fontSize: 12, color: rose, marginTop: 4 }}>{itemError}</div>}
-          </Field>
-        </div>
+  const quantity = cfg.showQuantity ? Math.max(0, Number(form.quantity) || 0) : 1;
+  const subtotal = quantity * (Math.max(0, Number(form.unitCost) || 0));
+  const taxAmount = subtotal * (Math.max(0, Number(form.taxRate) || 0) / 100);
+  const total = subtotal + taxAmount;
+  const remaining = Math.max(0, total - (Math.max(0, Number(form.amountPaid) || 0)));
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+  function updateDepositAmount(value) {
+    setForm((current) => {
+      const priorDeposit = Number(current.depositAmount) || 0;
+      const currentPaid = Number(current.amountPaid) || 0;
+      const nextPaid = current.depositPaid && currentPaid <= priorDeposit ? value : current.amountPaid;
+      return { ...current, depositAmount: value, amountPaid: nextPaid };
+    });
+  }
+
+  function updateDepositPaid(checked) {
+    setForm((current) => ({
+      ...current,
+      depositPaid: checked,
+      amountPaid: checked
+        ? String(Math.max(Number(current.amountPaid) || 0, Number(current.depositAmount) || 0))
+        : current.amountPaid,
+    }));
+  }
+
+  return (
+    <div className="expense-form-shell">
+      <div className="expense-form-heading">
+        <div>
+          <div className="page-kicker">Wedding money</div>
+          <div style={{ fontFamily: serif, fontSize: 25, fontWeight: 500 }}>
+            {editingId ? "Edit wedding expense" : "Log wedding expense"}
+          </div>
+          <div className="expense-form-intro">Add what you know now. You can come back when another payment is made.</div>
+        </div>
+        <button type="button" className="dialog-close" onClick={onCancel} aria-label="Close expense dialog">×</button>
+      </div>
+
+      <form onSubmit={onSubmit}>
+        <section className="expense-form-section">
+          <div className="expense-section-label"><span>1</span> Expense</div>
+          <div className="expense-grid expense-grid-main">
+            <Field label="Category">
+              <select value={form.categoryId} onChange={(e) => onCategoryChange(e.target.value)} style={inputStyle}>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Item or service">
+              <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="e.g. Dinner package" style={inputStyle} />
+              {itemError && <div className="field-error">{itemError}</div>}
+            </Field>
+          </div>
           <Field label="Vendor (optional)">
             <input value={form.vendor} onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))} placeholder="e.g. Willow Barn Events" style={inputStyle} />
           </Field>
-          <Field label={cfg.quantityLabel}>
-            <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
-          </Field>
-          <Field label="Unit cost">
-            <input type="number" min="0" step="0.01" value={form.unitCost} onChange={(e) => setForm((f) => ({ ...f, unitCost: e.target.value }))} placeholder="0.00" style={inputStyle} />
-          </Field>
-        </div>
+        </section>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-          <Field label="Tax ($)">
-            <input type="number" min="0" step="0.01" value={form.tax} onChange={(e) => setForm((f) => ({ ...f, tax: e.target.value }))} placeholder="0.00" style={inputStyle} />
-          </Field>
-          <Field label="Amount paid so far">
-            <input type="number" min="0" step="0.01" value={form.amountPaid} onChange={(e) => setForm((f) => ({ ...f, amountPaid: e.target.value }))} placeholder="0.00" style={inputStyle} />
-          </Field>
-        </div>
+        <section className="expense-form-section deposit-section">
+          <label className="check-row">
+            <input type="checkbox" checked={form.requiresDeposit} onChange={(e) => setForm((f) => ({ ...f, requiresDeposit: e.target.checked, depositPaid: e.target.checked ? f.depositPaid : false }))} />
+            <span><strong>This vendor requires a deposit</strong><small>Track the amount and due date separately.</small></span>
+          </label>
+          {form.requiresDeposit && (
+            <div className="expense-grid expense-grid-three deposit-fields">
+              <Field label="Deposit amount">
+                <input type="number" min="0" step="0.01" value={form.depositAmount} onChange={(e) => updateDepositAmount(e.target.value)} placeholder="0.00" style={inputStyle} />
+              </Field>
+              <Field label="Deposit due date">
+                <input type="date" value={form.depositDueDate} onChange={(e) => setForm((f) => ({ ...f, depositDueDate: e.target.value }))} style={inputStyle} />
+              </Field>
+              <label className="paid-check-card">
+                <input type="checkbox" checked={form.depositPaid} onChange={(e) => updateDepositPaid(e.target.checked)} />
+                <span><strong>Paid</strong><small>Adds the deposit to amount paid</small></span>
+              </label>
+            </div>
+          )}
+        </section>
 
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 10, color: "#4b4c44" }}>
-          <input
-            type="checkbox"
-            checked={form.requiresDeposit}
-            onChange={(e) => setForm((f) => ({ ...f, requiresDeposit: e.target.checked }))}
-          />
-          This vendor requires a deposit
-        </label>
-
-        {form.requiresDeposit && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10, background: brassSoft, padding: 12, borderRadius: 8 }}>
-            <Field label="Deposit amount">
-              <input type="number" min="0" step="0.01" value={form.depositAmount} onChange={(e) => setForm((f) => ({ ...f, depositAmount: e.target.value }))} placeholder="0.00" style={inputStyle} />
+        <section className="expense-form-section">
+          <div className="expense-section-label"><span>2</span> Cost</div>
+          <div className={`expense-grid ${cfg.showQuantity ? "expense-grid-three" : "expense-grid-two"}`}>
+            {cfg.showQuantity && (
+              <Field label={cfg.quantityLabel}>
+                <input type="number" min="0" step="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={inputStyle} />
+              </Field>
+            )}
+            <Field label={cfg.costLabel}>
+              <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.unitCost} onChange={(e) => setForm((f) => ({ ...f, unitCost: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
             </Field>
-            <Field label="Deposit due date">
-              <input type="date" value={form.depositDueDate} onChange={(e) => setForm((f) => ({ ...f, depositDueDate: e.target.value }))} style={inputStyle} />
+            <Field label="Tax">
+              <div className="input-affix suffix"><input type="number" min="0" step="0.01" value={form.taxRate} onChange={(e) => setForm((f) => ({ ...f, taxRate: e.target.value }))} placeholder="0" style={inputStyle} /><span>%</span></div>
             </Field>
           </div>
-        )}
+          <div className="cost-preview" aria-live="polite">
+            <div><span>Subtotal</span><strong>{CAD(subtotal)}</strong></div>
+            <div><span>Tax ({Number(form.taxRate) || 0}%)</span><strong>{CAD(taxAmount)}</strong></div>
+            <div className="cost-total"><span>Total</span><strong>{CAD(total)}</strong></div>
+          </div>
+        </section>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-          <Field label="Balance due date (optional)">
-            <input type="date" value={form.balanceDueDate} onChange={(e) => setForm((f) => ({ ...f, balanceDueDate: e.target.value }))} style={inputStyle} />
-          </Field>
-          <Field label="Date (optional)">
-            <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} style={inputStyle} />
-          </Field>
-        </div>
+        <section className="expense-form-section">
+          <div className="expense-section-label"><span>3</span> Payment</div>
+          <div className="expense-grid expense-grid-three">
+            <Field label="Amount paid">
+              <div className="input-affix"><span>$</span><input type="number" min="0" step="0.01" value={form.amountPaid} onChange={(e) => setForm((f) => ({ ...f, amountPaid: e.target.value }))} placeholder="0.00" style={inputStyle} /></div>
+            </Field>
+            <Field label="Who paid">
+              <input value={form.whoPaid} onChange={(e) => setForm((f) => ({ ...f, whoPaid: e.target.value }))} placeholder="e.g. Alex" style={inputStyle} />
+            </Field>
+            <Field label="Payment method">
+              <select value={form.paymentMethod} onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))} style={inputStyle}>
+                <option value="">Select method</option>
+                <option value="cash">Cash</option>
+                <option value="credit">Credit</option>
+                <option value="debit">Debit</option>
+                <option value="etransfer">e-Transfer</option>
+                <option value="other">Other</option>
+              </select>
+            </Field>
+          </div>
+          <div className="expense-grid expense-grid-two payment-secondary">
+            <Field label="Balance due date (optional)">
+              <input type="date" value={form.balanceDueDate} onChange={(e) => setForm((f) => ({ ...f, balanceDueDate: e.target.value }))} style={inputStyle} />
+            </Field>
+            <div className="remaining-preview"><span>Remaining after payment</span><strong>{CAD(remaining)}</strong></div>
+          </div>
+        </section>
 
-        <div style={{ marginBottom: 16 }}>
+        <section className="expense-form-section notes-section">
           <Field label="Notes (optional)">
             <input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Anything worth remembering" style={inputStyle} />
           </Field>
-        </div>
+        </section>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div className="expense-form-actions">
           <button type="submit" style={primaryBtnStyle}>{editingId ? "Save changes" : "Log expense"}</button>
           <button type="button" onClick={onCancel} style={ghostBtnStyle}>Cancel</button>
         </div>
