@@ -55,13 +55,6 @@ const CAD = (n) =>
   new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
     Number.isFinite(n) ? n : 0
   );
-const PAYMENT_METHOD_LABELS = {
-  cash: "Cash",
-  credit: "Credit",
-  debit: "Debit",
-  etransfer: "e-Transfer",
-  other: "Other",
-};
 const ink = "#373229";
 const forest = "#48634B";
 const forestSoft = "#E4ECDD";
@@ -1192,6 +1185,9 @@ export default function WeddingBudgetTracker() {
                 onSubmit={saveItem}
                 itemError={itemError}
                 onCancel={() => { setAddOpen(false); setEditingId(null); setItemError(""); }}
+                onDelete={editingId ? () => {
+                  if (window.confirm("Delete this expense? This can't be undone.")) deleteItem(editingId);
+                } : null}
               />
             </div>
           </div>
@@ -1244,7 +1240,6 @@ export default function WeddingBudgetTracker() {
             onBack={() => setPage("summary")}
             onAddItem={() => openAddPanel(activeCategory.id)}
             onEditItem={openEditItem}
-            onDeleteItem={deleteItem}
             onRemoveCategory={removeCategory}
           />
         ) : null}
@@ -1302,6 +1297,9 @@ function GoogleFontImport() {
       .scrap-card:nth-child(2n+1) { transform: rotate(-.25deg); }
       tbody tr:hover { background: #FFFCF2; }
       thead { background: rgba(246,229,200,.28); }
+      .expense-table-row { border-top: 1px solid ${line}; cursor: pointer; }
+      .expense-table-row:hover { background: #FBF7EC; }
+      .expense-table-row:focus-visible { outline: 2px solid ${forest}; outline-offset: -2px; background: ${forestSoft}; }
       .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 28px; background: rgba(45,42,35,.58); backdrop-filter: blur(5px); animation: fade-in .18s ease-out; }
       .expense-dialog { width: min(840px, 100%); max-height: calc(100vh - 56px); overflow-y: auto; background: #F4EFE4; border: 1px solid rgba(216,206,186,.8); border-radius: 12px; box-shadow: 0 28px 80px rgba(35,31,25,.30); animation: dialog-in .22s ease-out; scrollbar-color: #C8BFAE transparent; }
       .expense-form-shell { background: #F4EFE4; }
@@ -1372,10 +1370,51 @@ function GoogleFontImport() {
       .field-error { margin-top: 4px; color: ${rose}; font-size: 11px; }
       .expense-form-actions { position: sticky; z-index: 4; bottom: 0; display: flex; justify-content: flex-end; gap: 9px; margin: 0 -28px -24px; padding: 16px 28px; border-top: 1px solid rgba(216,206,186,.8); background: rgba(255,253,247,.97); backdrop-filter: blur(8px); }
       .expense-form-actions button[type="submit"] { order: 2; min-width: 128px; }
+      .delete-expense-button { display: grid; place-items: center; width: 36px; height: 36px; margin-right: auto; padding: 0; border: 1px solid rgba(184,96,100,.35); border-radius: 7px; background: transparent; color: ${rose}; }
+      .delete-expense-button:hover { border-color: ${rose}; background: ${roseSoft}; }
+      .delete-expense-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
       .breadcrumb { display: inline-flex; gap: 8px; align-items: center; margin: 0 0 22px; padding: 0; border: 0; background: transparent; color: ${forest}; font-size: 12px; font-weight: 600; }
       .breadcrumb span { color: ${brass}; }
       .category-page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 24px; }
       .category-page-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .category-budget-overview { position: relative; padding: 22px 24px 20px; margin-bottom: 30px; border: 1px solid rgba(104,91,66,.12); border-radius: 9px; background: #FFFDF7; box-shadow: 4px 5px 0 rgba(192,132,79,.09); }
+      .category-budget-overview.is-over { border-color: rgba(184,96,100,.32); box-shadow: 4px 5px 0 rgba(184,96,100,.10); }
+      .category-budget-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 29px; }
+      .category-budget-kicker { margin-bottom: 4px; color: ${brass}; font: 500 9px/1 'DM Mono', monospace; letter-spacing: .12em; text-transform: uppercase; }
+      .category-budget-title { color: ${ink}; font: 500 20px/1.2 ${serif}; }
+      .category-budget-status { padding: 6px 9px; border-radius: 20px; background: ${forestSoft}; color: ${forest}; font-size: 11px; font-weight: 600; white-space: nowrap; }
+      .category-budget-status.over { background: ${roseSoft}; color: ${rose}; }
+      .category-budget-track { position: relative; height: 22px; margin-bottom: 20px; overflow: visible; border: 1px solid rgba(104,91,66,.13); border-radius: 20px; background: ${remainingColor}; box-shadow: inset 0 1px 2px rgba(55,50,41,.08); }
+      .budget-segment { position: absolute; top: -1px; bottom: -1px; min-width: 0; transition: width .25s ease, left .25s ease; }
+      .budget-segment.paid { left: -1px; border-radius: 20px 0 0 20px; background: ${forest}; }
+      .budget-segment.planned { background: ${brass}; }
+      .budget-segment.starts-track { left: -1px !important; border-radius: 20px 0 0 20px; }
+      .budget-segment.ends-track { border-radius: 0 20px 20px 0; }
+      .budget-segment.starts-track.ends-track, .budget-segment.paid.ends-track { border-radius: 20px; }
+      .budget-overrun { position: absolute; z-index: 2; top: -1px; bottom: -1px; border-radius: 0 20px 20px 0; background: repeating-linear-gradient(135deg, ${rose} 0, ${rose} 6px, #CC777A 6px, #CC777A 11px); }
+      .budget-assigned-marker { position: absolute; z-index: 3; top: -7px; bottom: -7px; width: 2px; background: ${ink}; transform: translateX(-1px); }
+      .budget-assigned-marker:after { content: ''; position: absolute; top: -3px; left: -3px; width: 8px; height: 8px; border-radius: 50%; background: ${ink}; }
+      .budget-assigned-marker span { position: absolute; bottom: calc(100% + 7px); left: 50%; color: #776F63; font: 500 9px/1 'DM Mono', monospace; white-space: nowrap; transform: translateX(-50%); }
+      .budget-assigned-marker.near-start span { left: 0; transform: none; }
+      .budget-assigned-marker.near-end span { left: auto; right: 0; transform: none; }
+      .category-budget-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid rgba(216,206,186,.75); }
+      .budget-metric { min-width: 0; padding: 16px 16px 0; border-right: 1px solid rgba(216,206,186,.75); }
+      .budget-metric:first-child { padding-left: 0; }
+      .budget-metric:last-child { border-right: 0; }
+      .budget-metric-label { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; color: #71695D; font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+      .budget-metric-label span { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: ${ink}; }
+      .budget-metric.planned .budget-metric-label span { background: ${brass}; }
+      .budget-metric.paid .budget-metric-label span { background: ${forest}; }
+      .budget-metric.remaining .budget-metric-label span { border: 1px solid #B8AF9D; background: ${remainingColor}; }
+      .budget-metric.over .budget-metric-label span { background: ${rose}; }
+      .budget-metric strong { display: block; color: ${ink}; font: 500 20px/1.2 ${serif}; white-space: nowrap; }
+      .budget-metric.planned strong { color: #9A6539; }
+      .budget-metric.paid strong, .budget-metric.remaining strong { color: ${forest}; }
+      .budget-metric.over strong { color: ${rose}; }
+      .budget-metric small { display: block; margin-top: 4px; color: #8A8174; font-size: 9px; line-height: 1.35; }
+      .budget-assigned-input { position: relative; }
+      .budget-assigned-input > span { position: absolute; z-index: 1; left: 0; top: 5px; color: ${ink}; font: 500 18px/1 ${serif}; }
+      .budget-assigned-input input { width: 100%; height: 30px; padding: 0 4px 0 15px; border: 0; border-bottom: 1px solid ${line}; border-radius: 0; outline: 0; background: transparent; color: ${ink}; font: 500 20px/1 ${serif}; }
       .settings-tabs { display: flex; gap: 26px; border-bottom: 1px solid ${line}; margin-bottom: 22px; }
       .settings-tabs button { position: relative; border: 0; background: transparent; padding: 11px 1px 12px; color: #777064; font-size: 13px; font-weight: 600; }
       .settings-tabs button.active { color: ${forest}; }
@@ -1425,6 +1464,14 @@ function GoogleFontImport() {
         .expense-section-heading { align-items: flex-start; flex-wrap: wrap; }
         .category-page-header { display: grid; }
         .category-page-actions { justify-content: flex-start; }
+        .category-budget-overview { padding: 18px 16px; }
+        .category-budget-heading { display: grid; margin-bottom: 31px; }
+        .category-budget-status { justify-self: start; }
+        .category-budget-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        .budget-metric { padding: 14px 12px; border-bottom: 1px solid rgba(216,206,186,.75); }
+        .budget-metric:nth-child(2) { border-right: 0; }
+        .budget-metric:nth-child(3) { padding-left: 0; border-bottom: 0; }
+        .budget-metric:nth-child(4) { border-right: 0; border-bottom: 0; }
         .cost-preview { grid-template-columns: 1fr; }
         .cost-preview.itemized-preview { grid-template-columns: repeat(2,1fr); }
         .line-item-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
@@ -1556,7 +1603,7 @@ function SummaryPage({
             {categories.map((c) => {
               const t = categoryTotals(c.id);
               const budget = Number(c.budget) || 0;
-              const remaining = budget - t.paid;
+              const remaining = budget - t.paid - t.planned;
               return (
                 <tr key={c.id} style={{ borderTop: `1px solid ${line}`, cursor: "pointer" }} onClick={() => onSelectCategory(c.id)}>
                   <td style={{ ...tdStyle, fontWeight: 500 }}>{c.name}</td>
@@ -1689,9 +1736,8 @@ function SettingsPage({
   );
 }
 
-function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onAddItem, onEditItem, onDeleteItem, onRemoveCategory }) {
+function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, onAddItem, onEditItem, onRemoveCategory }) {
   const budget = Number(category.budget) || 0;
-  const remaining = budget - totals.paid;
   return (
     <div>
       <button type="button" className="breadcrumb" onClick={onBack}>Summary <span>›</span> {category.name}</button>
@@ -1705,24 +1751,12 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 30 }}>
-        <div style={{ background: forestSoft, borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 12, color: "#5c5c53", marginBottom: 6 }}>Assigned</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ fontFamily: serif, fontSize: 18, color: forest }}>$</span>
-            <input
-              type="number" min="0"
-              value={budget === 0 ? "" : budget}
-              placeholder="0"
-              onChange={(e) => updateCategoryBudget(category.id, Math.max(0, Number(e.target.value) || 0))}
-              style={{ ...inputStyle, background: "#fff", height: 34, fontSize: 16, fontFamily: serif }}
-            />
-          </div>
-        </div>
-        <SummaryCard label="Planned" value={CAD(totals.planned)} sub="Committed, not yet paid" />
-        <SummaryCard label="Paid" value={CAD(totals.paid)} />
-        <SummaryCard label={remaining < 0 ? "Over by" : "Remaining"} value={CAD(Math.abs(remaining))} tone={remaining < 0 ? "danger" : "default"} />
-      </div>
+      <CategoryBudgetBar
+        budget={budget}
+        planned={totals.planned}
+        paid={totals.paid}
+        onBudgetChange={(value) => updateCategoryBudget(category.id, value)}
+      />
 
       {items.length === 0 ? (
         <div style={{ fontSize: 13, color: "#8a8a80", border: `1px solid ${line}`, borderRadius: 12, padding: "24px", background: "#fff" }}>
@@ -1733,34 +1767,32 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: "left", color: "#8a8a80" }}>
-                <th style={thStyle}>Item</th>
+                <th style={thStyle}>Item name</th>
                 <th style={thStyle}>Vendor</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Qty</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Paid</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Planned</th>
-                <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
               {items.map((it) => {
                 const t = itemTotals(it);
                 return (
-                  <tr key={it.id} style={{ borderTop: `1px solid ${line}` }}>
-                    <td style={tdStyle}>
-                      <div style={{ fontWeight: 500 }}>{it.description}</div>
-                      {it.requiresDeposit && (
-                        <div style={{ fontSize: 11, marginTop: 2, color: t.depositCovered ? forest : brass }}>
-                          Deposit {CAD(it.depositAmount)}{it.depositDueDate ? ` due ${it.depositDueDate}` : ""} {t.depositCovered ? "· paid" : "· pending"}
-                        </div>
-                      )}
-                      {it.costMode === "itemized" && it.lineItems?.length > 0 && (
-                        <div style={{ fontSize: 11, marginTop: 3, color: forest }}>
-                          {it.lineItems.length} itemized {it.lineItems.length === 1 ? "cost" : "costs"}
-                        </div>
-                      )}
-                      {it.notes && <div style={{ fontSize: 12, color: "#8a8a80" }}>{it.notes}</div>}
-                    </td>
+                  <tr
+                    key={it.id}
+                    className="expense-table-row"
+                    tabIndex={0}
+                    aria-label={`Edit ${it.description}`}
+                    onClick={() => onEditItem(it)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onEditItem(it);
+                      }
+                    }}
+                  >
+                    <td style={{ ...tdStyle, fontWeight: 500 }}>{it.description}</td>
                     <td style={tdStyle}>{it.vendor || "—"}</td>
                     <td style={{ ...tdStyle, textAlign: "right" }}>
                       {it.costMode === "itemized"
@@ -1768,19 +1800,8 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
                         : it.quantity}
                     </td>
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 500 }}>{CAD(t.total)}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", color: forest }}>
-                      <div>{CAD(t.paid)}</div>
-                      {(it.whoPaid || it.paymentMethod) && (
-                        <div style={{ marginTop: 3, color: "#8a8a80", fontSize: 10 }}>
-                          {[it.whoPaid, PAYMENT_METHOD_LABELS[it.paymentMethod]].filter(Boolean).join(" · ")}
-                        </div>
-                      )}
-                    </td>
+                    <td style={{ ...tdStyle, textAlign: "right", color: forest }}>{CAD(t.paid)}</td>
                     <td style={{ ...tdStyle, textAlign: "right", color: brass }}>{CAD(t.planned)}</td>
-                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
-                      <button onClick={() => onEditItem(it)} style={iconTextBtnStyle}>Edit</button>
-                      <button onClick={() => onDeleteItem(it.id)} style={{ ...iconTextBtnStyle, color: rose }}>Delete</button>
-                    </td>
                   </tr>
                 );
               })}
@@ -1792,7 +1813,79 @@ function CategoryPage({ category, items, totals, updateCategoryBudget, onBack, o
   );
 }
 
-function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel }) {
+function CategoryBudgetBar({ budget, planned, paid, onBudgetChange }) {
+  const committed = planned + paid;
+  const remaining = Math.max(0, budget - committed);
+  const over = Math.max(0, committed - budget);
+  const scale = Math.max(budget, committed, 1);
+  const paidWidth = Math.min(100, (paid / scale) * 100);
+  const plannedWidth = Math.min(100 - paidWidth, (planned / scale) * 100);
+  const assignedMarker = Math.min(100, Math.max(0, (budget / scale) * 100));
+  const overWidth = Math.min(100, (over / scale) * 100);
+
+  return (
+    <section className={`category-budget-overview${over > 0 ? " is-over" : ""}`}>
+      <div className="category-budget-heading">
+        <div>
+          <div className="category-budget-kicker">Budget progress</div>
+          <div className="category-budget-title">Where this category stands</div>
+        </div>
+        <div className={`category-budget-status${over > 0 ? " over" : ""}`}>
+          {over > 0 ? `${CAD(over)} over assigned` : `${CAD(remaining)} still available`}
+        </div>
+      </div>
+
+      <div
+        className="category-budget-track"
+        role="img"
+        aria-label={`${CAD(budget)} assigned, ${CAD(planned)} planned, ${CAD(paid)} paid, ${over > 0 ? `${CAD(over)} over assigned` : `${CAD(remaining)} remaining`}`}
+      >
+        <div className={`budget-segment paid${plannedWidth === 0 && paidWidth >= 99.99 ? " ends-track" : ""}`} style={{ width: `${paidWidth}%` }} />
+        <div className={`budget-segment planned${paidWidth === 0 ? " starts-track" : ""}${paidWidth + plannedWidth >= 99.99 ? " ends-track" : ""}`} style={{ left: `${paidWidth}%`, width: `${plannedWidth}%` }} />
+        {over > 0 && (
+          <>
+            <div className="budget-overrun" style={{ left: `${assignedMarker}%`, width: `${overWidth}%` }} />
+            <div className={`budget-assigned-marker${assignedMarker < 15 ? " near-start" : assignedMarker > 85 ? " near-end" : ""}`} style={{ left: `${assignedMarker}%` }}><span>Assigned limit</span></div>
+          </>
+        )}
+      </div>
+
+      <div className="category-budget-metrics">
+        <div className="budget-metric assigned">
+          <div className="budget-metric-label"><span />Assigned</div>
+          <div className="budget-assigned-input">
+            <span>$</span>
+            <input
+              type="number"
+              min="0"
+              value={budget === 0 ? "" : budget}
+              placeholder="0"
+              aria-label="Assigned category budget"
+              onChange={(event) => onBudgetChange(Math.max(0, Number(event.target.value) || 0))}
+            />
+          </div>
+        </div>
+        <div className="budget-metric planned">
+          <div className="budget-metric-label"><span />Planned</div>
+          <strong>{CAD(planned)}</strong>
+          <small>Committed, not paid</small>
+        </div>
+        <div className="budget-metric paid">
+          <div className="budget-metric-label"><span />Paid</div>
+          <strong>{CAD(paid)}</strong>
+          <small>Payments completed</small>
+        </div>
+        <div className={`budget-metric ${over > 0 ? "over" : "remaining"}`}>
+          <div className="budget-metric-label"><span />{over > 0 ? "Over assigned" : "Remaining"}</div>
+          <strong>{CAD(over > 0 ? over : remaining)}</strong>
+          <small>{over > 0 ? "Planned + paid exceed budget" : "Available to allocate"}</small>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, onSubmit, itemError, onCancel, onDelete }) {
   const cfg = fieldConfigFor(form.categoryId, categories);
   const isItemized = form.costMode === "itemized";
   const quantity = Math.max(0, Number(form.quantity) || 0);
@@ -2090,6 +2183,13 @@ function AddItemPanel({ form, setForm, categories, editingId, onCategoryChange, 
         </section>
 
         <div className="expense-form-actions">
+          {editingId && (
+            <button type="button" className="delete-expense-button" onClick={onDelete} aria-label="Delete expense" title="Delete expense">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" />
+              </svg>
+            </button>
+          )}
           <button type="submit" style={primaryBtnStyle}>{editingId ? "Save changes" : "Log expense"}</button>
           <button type="button" onClick={onCancel} style={ghostBtnStyle}>Cancel</button>
         </div>
